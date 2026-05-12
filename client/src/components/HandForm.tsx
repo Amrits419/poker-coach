@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Action, HandInput, submitHand, Analysis } from '../api'
+import type { Action, HandInput, Analysis } from '../api'
+import { submitHand } from '../api'
 
 const POSITIONS = ['UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN', 'SB', 'BB']
 const STREETS = ['Preflop', 'Flop', 'Turn', 'River'] as const
@@ -170,7 +171,7 @@ export default function HandForm({ userId, onResult }: Props) {
         disabled={loading}
         className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium py-3 rounded-lg transition-colors"
       >
-        {loading ? 'Analyzing with GPT-4o...' : 'Analyze Hand'}
+        {loading ? 'Analyzing...' : 'Analyze Hand'}
       </button>
     </form>
   )

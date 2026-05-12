@@ -21,7 +21,7 @@ export interface HandHistoryEntry {
 
 export interface StartState {
   holeCards: string
-  villainHoleCards: string[]   // one per villain position, same index order
+  villainHoleCards: string[]
   villainPositions: string[]
   board: { flop: string[]; turn: string; river: string }
   heroIsIP: boolean
@@ -31,13 +31,13 @@ export interface StartState {
 }
 
 export interface VillainResponse {
-  action: string         // 'check' | 'bet' | 'raise' | 'call' | 'fold'
-  amount?: number        // in bb if bet/raise
-  description: string    // e.g. "BB bets 6bb (1/3 pot)"
-  potOdds: string | null // e.g. "3.2:1" if hero faces a bet, null if villain checks/folds
+  action: string
+  amount?: number
+  description: string
+  potOdds: string | null
   newPot: number
   newStack: number
-  isHandOver: boolean    // villain folded or went all-in and no decision needed
+  isHandOver: boolean
 }
 
 export interface Analysis {
