@@ -8,24 +8,21 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  username  String   @unique
-  createdAt DateTime @default(now())
-  hands     Hand[]
+  id        String        @id @default(cuid())
+  email     String        @unique
+  username  String        @unique
+  createdAt DateTime      @default(now())
+  hands     TrainerHand[]
 }
 
-model Hand {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  position  String
-  holeCards String
-  board     String
-  actions   Json
-  potSize   Float
-  stackSize Float
-  analysis  Json
-  leaks     String[]
-  createdAt DateTime @default(now())
+model TrainerHand {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  setup       Json
+  scenario    Json
+  userActions Json
+  analysis    Json?
+  leaks       String[]
+  createdAt   DateTime @default(now())
 }

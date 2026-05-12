@@ -16,16 +16,17 @@ router.post('/', async (req: Request, res: Response) => {
 
   const analysis = await analyzeHand({ position, holeCards, board, actions, potSize, stackSize })
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hand = await prisma.hand.create({
     data: {
       userId,
       position,
       holeCards,
       board: board || '',
-      actions,
+      actions: actions as any,
       potSize,
       stackSize,
-      analysis,
+      analysis: analysis as any,
       leaks: analysis.leaks,
     },
   })
@@ -34,7 +35,7 @@ router.post('/', async (req: Request, res: Response) => {
 })
 
 router.get('/user/:userId', async (req: Request, res: Response) => {
-  const { userId } = req.params
+  const userId = String(req.params.userId)
 
   const hands = await prisma.hand.findMany({
     where: { userId },
@@ -46,7 +47,7 @@ router.get('/user/:userId', async (req: Request, res: Response) => {
 
 // aggregate leaks across all hands for a user and sort by frequency
 router.get('/leaks/:userId', async (req: Request, res: Response) => {
-  const { userId } = req.params
+  const userId = String(req.params.userId)
 
   const hands = await prisma.hand.findMany({
     where: { userId },

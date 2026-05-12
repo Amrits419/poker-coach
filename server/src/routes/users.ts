@@ -22,7 +22,7 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 router.get('/:id', async (req: Request, res: Response) => {
-  const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+  const user = await prisma.user.findUnique({ where: { id: String(req.params.id) } });
   if (!user) {
     res.status(404).json({ error: 'User not found' });
     return;
