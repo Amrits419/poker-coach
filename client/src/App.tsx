@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { Setup, StartState, Analysis } from './api'
 import { createUser, startHand } from './api'
 import SetupScreen from './components/Setup'
-import HandTrainer from './components/HandTrainer'
+import HandTrainer, { type VillainDesc } from './components/HandTrainer'
 import AnalysisResult from './components/AnalysisResult'
 import LeakDashboard from './components/LeakDashboard'
 import './index.css'
@@ -21,6 +21,7 @@ export default function App() {
   const [currentSetup, setCurrentSetup] = useState<Setup | null>(null)
   const [currentStartState, setCurrentStartState] = useState<StartState | null>(null)
   const [currentAnalysis, setCurrentAnalysis] = useState<Analysis | null>(null)
+  const [currentVillainDescs, setCurrentVillainDescs] = useState<VillainDesc[]>([])
   const [generating, setGenerating] = useState(false)
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -41,8 +42,9 @@ export default function App() {
     setGenerating(false)
   }
 
-  const handleAnalysisDone = (analysis: Analysis) => {
+  const handleAnalysisDone = (analysis: Analysis, villainDescs: VillainDesc[]) => {
     setCurrentAnalysis(analysis)
+    setCurrentVillainDescs(villainDescs)
     setScreen('analysis')
   }
 
@@ -54,12 +56,14 @@ export default function App() {
 
   if (!userId) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4">
+      <div className="min-h-screen flex items-center justify-center p-6">
         <div className="w-full max-w-sm">
-          <div className="text-center mb-8">
-            <div className="text-4xl mb-3">♠</div>
-            <h1 className="text-2xl font-bold text-white">Poker Trainer</h1>
-            <p className="text-slate-400 text-sm mt-1">AI-powered hand training. Learn your leaks.</p>
+          <div className="text-center mb-10">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-600/20 border border-emerald-500/30 mb-4">
+              <span className="text-3xl">♠</span>
+            </div>
+            <h1 className="text-2xl font-bold text-white tracking-tight">Poker Coach</h1>
+            <p className="text-slate-400 text-sm mt-1.5">AI-powered GTO training</p>
           </div>
           <form onSubmit={handleLogin} className="space-y-3">
             <input
@@ -67,7 +71,7 @@ export default function App() {
               onChange={e => setUsername(e.target.value)}
               placeholder="Username"
               required
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+              className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors"
             />
             <input
               type="email"
@@ -75,12 +79,12 @@ export default function App() {
               onChange={e => setEmail(e.target.value)}
               placeholder="Email"
               required
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+              className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors"
             />
             <button
               type="submit"
               disabled={loginLoading}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium py-3 rounded-lg transition-colors"
+              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold py-3 rounded-xl transition-colors mt-1"
             >
               {loginLoading ? 'Setting up...' : 'Start Training'}
             </button>
@@ -91,34 +95,34 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen max-w-xl mx-auto p-4">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-2">
-          <span className="text-2xl">♠</span>
-          <h1 className="text-lg font-bold text-white">Poker Trainer</h1>
-        </div>
-        <div className="flex gap-2 items-center">
-          {screen !== 'dashboard' && (
-            <button
-              onClick={() => setScreen('dashboard')}
-              className="text-xs text-slate-400 hover:text-white border border-slate-700 px-3 py-1.5 rounded-lg"
-            >
-              Stats
-            </button>
-          )}
-          {screen === 'dashboard' && (
-            <button
-              onClick={() => setScreen('setup')}
-              className="text-xs text-slate-400 hover:text-white border border-slate-700 px-3 py-1.5 rounded-lg"
-            >
-              Play
-            </button>
-          )}
+    <div className="min-h-screen max-w-xl mx-auto px-4 pb-8">
+      {/* Header */}
+      <div className="flex items-center justify-between py-4 mb-2">
+        <button
+          onClick={() => setScreen('setup')}
+          className="flex items-center gap-2 group"
+        >
+          <div className="w-7 h-7 rounded-lg bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center">
+            <span className="text-sm">♠</span>
+          </div>
+          <span className="text-white font-bold text-sm tracking-tight">Poker Coach</span>
+        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setScreen(screen === 'dashboard' ? 'setup' : 'dashboard')}
+            className={`text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${
+              screen === 'dashboard'
+                ? 'bg-slate-700 text-white'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+          >
+            {screen === 'dashboard' ? '← Play' : 'Stats'}
+          </button>
           <button
             onClick={() => { localStorage.removeItem('pokerCoachUserId'); setUserId(null) }}
-            className="text-xs text-slate-500 hover:text-slate-300"
+            className="text-xs text-slate-600 hover:text-slate-400 px-2 py-1.5 transition-colors"
           >
-            Sign out
+            Out
           </button>
         </div>
       </div>
@@ -140,6 +144,7 @@ export default function App() {
         <AnalysisResult
           analysis={currentAnalysis}
           startState={currentStartState}
+          villainDescriptions={currentVillainDescs}
           onNext={handleNextHand}
           onMenu={() => setScreen('setup')}
         />

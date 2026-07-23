@@ -59,7 +59,8 @@ router.post('/start', async (req: Request, res: Response) => {
 
 // get villain's GTO response to the current situation
 router.post('/villain-act', async (req: Request, res: Response) => {
-  const { setup, startState, history, currentStreet, currentBoard, pot, effectiveStack } = req.body
+  const { setup, startState, history, currentStreet, currentBoard, pot, effectiveStack, actingVillainIndex } = req.body
+  const villainIndex: number = typeof actingVillainIndex === 'number' ? actingVillainIndex : 0
 
   if (!setup || !startState || !currentStreet) {
     res.status(400).json({ error: 'Missing required fields' })
@@ -67,7 +68,7 @@ router.post('/villain-act', async (req: Request, res: Response) => {
   }
 
   const response = await getVillainAction(
-    setup, startState, history ?? [], currentStreet, currentBoard ?? [], pot, effectiveStack
+    setup, startState, history ?? [], currentStreet, currentBoard ?? [], pot, effectiveStack, villainIndex
   )
 
   // Override AI's pot/stack — LLMs are unreliable at arithmetic
@@ -92,20 +93,26 @@ router.post('/analyze', async (req: Request, res: Response) => {
     return
   }
 
-  const analysis = await analyzeHand(setup, startState as any, history)
+  try {
+    const analysis = await analyzeHand(setup, startState as any, history)
 
-  await prisma.trainerHand.create({
-    data: {
-      userId,
-      setup: setup as any,
-      scenario: startState as any,
-      userActions: history as any,
-      analysis: analysis as any,
-      leaks: analysis.leaks,
-    },
-  })
+    // Return analysis immediately — don't block on DB save
+    res.json({ analysis })
 
-  res.json({ analysis })
+    prisma.trainerHand.create({
+      data: {
+        userId,
+        setup: setup as any,
+        scenario: startState as any,
+        userActions: history as any,
+        analysis: analysis as any,
+        leaks: analysis.leaks,
+      },
+    }).catch(err => console.error('DB save failed (non-fatal):', err))
+  } catch (err) {
+    console.error('Analysis failed:', err)
+    res.status(500).json({ error: 'Analysis failed', detail: String(err) })
+  }
 })
 
 router.get('/history/:userId', async (req: Request, res: Response) => {

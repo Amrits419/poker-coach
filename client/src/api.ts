@@ -14,9 +14,11 @@ export interface StartState {
   villainPositions: string[]
   board: { flop: string[]; turn: string; river: string }
   heroIsIP: boolean
+  heroIsPFR: boolean
   preflopContext: string
   pot: number
   effectiveStack: number
+  preflopRaiseAmount: number | null
 }
 
 export interface HandHistoryEntry {
@@ -78,9 +80,10 @@ export const villainAct = (
   currentStreet: string,
   currentBoard: string[],
   pot: number,
-  effectiveStack: number
+  effectiveStack: number,
+  actingVillainIndex: number = 0
 ) =>
-  api.post('/trainer/villain-act', { setup, startState, history, currentStreet, currentBoard, pot, effectiveStack })
+  api.post('/trainer/villain-act', { setup, startState, history, currentStreet, currentBoard, pot, effectiveStack, actingVillainIndex })
     .then(r => r.data as VillainResponse)
 
 export const analyzeHand = (

@@ -17,9 +17,11 @@ export interface StartState {
   villainPositions: string[]
   board: { flop: string[]; turn: string; river: string }
   heroIsIP: boolean
+  heroIsPFR: boolean           // true = hero made the last preflop raise; false = hero called
   preflopContext: string
   pot: number
   effectiveStack: number
+  preflopRaiseAmount: number | null  // villain's open size when heroIsPFR=false, else null
 }
 
 export interface VillainResponse {

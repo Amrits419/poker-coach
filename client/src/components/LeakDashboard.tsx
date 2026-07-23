@@ -17,7 +17,11 @@ export default function LeakDashboard({ userId }: Props) {
       .finally(() => setLoading(false))
   }, [userId])
 
-  if (loading) return <p className="text-slate-500 text-sm">Loading...</p>
+  if (loading) return (
+    <div className="flex items-center justify-center py-16">
+      <span className="animate-spin text-2xl text-slate-600">♠</span>
+    </div>
+  )
 
   const avgScore = hands.length > 0
     ? Math.round(hands.reduce((sum, h) => sum + h.analysis.score, 0) / hands.length)
@@ -25,40 +29,50 @@ export default function LeakDashboard({ userId }: Props) {
 
   const maxCount = leaks[0]?.count || 1
 
+  const scoreColor =
+    avgScore == null ? '#64748b' :
+    avgScore >= 75 ? '#10b981' :
+    avgScore >= 50 ? '#f59e0b' : '#ef4444'
+
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-slate-800 rounded-lg p-4">
-          <p className="text-slate-400 text-xs uppercase tracking-wide">Hands Played</p>
-          <p className="text-3xl font-bold text-white mt-1">{hands.length}</p>
+      <div>
+        <h2 className="text-white font-bold text-xl tracking-tight">Your Stats</h2>
+        <p className="text-slate-500 text-sm mt-0.5">{hands.length} hand{hands.length !== 1 ? 's' : ''} played</p>
+      </div>
+
+      {/* Stats row */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-slate-800/60 border border-slate-700/40 rounded-2xl p-4">
+          <p className="text-slate-500 text-xs font-medium uppercase tracking-wide">Hands Played</p>
+          <p className="text-3xl font-black text-white mt-1">{hands.length}</p>
         </div>
-        <div className="bg-slate-800 rounded-lg p-4">
-          <p className="text-slate-400 text-xs uppercase tracking-wide">Avg Score</p>
-          <p className={`text-3xl font-bold mt-1 ${
-            avgScore == null ? 'text-slate-500' :
-            avgScore >= 75 ? 'text-emerald-400' :
-            avgScore >= 50 ? 'text-yellow-400' : 'text-red-400'
-          }`}>
+        <div className="bg-slate-800/60 border border-slate-700/40 rounded-2xl p-4">
+          <p className="text-slate-500 text-xs font-medium uppercase tracking-wide">Avg Score</p>
+          <p className="text-3xl font-black mt-1" style={{ color: scoreColor }}>
             {avgScore ?? '—'}
           </p>
         </div>
       </div>
 
+      {/* Leaks */}
       <div>
-        <p className="text-slate-400 text-xs uppercase tracking-wide mb-3">Your Leaks</p>
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Top Leaks</p>
         {leaks.length === 0 ? (
-          <p className="text-slate-500 text-sm">No hands played yet.</p>
+          <div className="bg-slate-800/40 border border-slate-700/30 rounded-2xl p-6 text-center">
+            <p className="text-slate-500 text-sm">Play some hands to see your leaks.</p>
+          </div>
         ) : (
-          <div className="space-y-3">
+          <div className="bg-slate-800/40 border border-slate-700/30 rounded-2xl p-4 space-y-4">
             {leaks.slice(0, 8).map(({ leak, count }) => (
               <div key={leak}>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-slate-300">{leak}</span>
-                  <span className="text-slate-500">{count}x</span>
+                <div className="flex justify-between items-start gap-3 mb-1.5">
+                  <span className="text-slate-300 text-sm leading-snug">{leak}</span>
+                  <span className="text-slate-500 text-xs font-bold shrink-0 mt-0.5">{count}×</span>
                 </div>
-                <div className="h-1.5 bg-slate-700 rounded-full">
+                <div className="h-1.5 bg-slate-700/60 rounded-full overflow-hidden">
                   <div
-                    className="h-1.5 bg-red-500 rounded-full"
+                    className="h-full bg-red-500 rounded-full transition-all"
                     style={{ width: `${(count / maxCount) * 100}%` }}
                   />
                 </div>
@@ -68,25 +82,29 @@ export default function LeakDashboard({ userId }: Props) {
         )}
       </div>
 
+      {/* Recent hands */}
       {hands.length > 0 && (
         <div>
-          <p className="text-slate-400 text-xs uppercase tracking-wide mb-3">Recent Hands</p>
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Recent Hands</p>
           <div className="space-y-2">
-            {hands.slice(0, 5).map(hand => (
-              <div key={hand.id} className="bg-slate-800 rounded-lg p-3 flex justify-between items-center">
-                <div>
-                  <span className="text-white text-sm font-medium">{hand.scenario.holeCards}</span>
-                  <span className="text-slate-500 text-xs ml-2">{hand.setup.position}</span>
-                  <span className="text-slate-500 text-xs ml-2">{hand.setup.stackDepth}</span>
+            {hands.slice(0, 6).map(hand => {
+              const sc = hand.analysis.score
+              const c = sc >= 75 ? 'text-emerald-400' : sc >= 50 ? 'text-yellow-400' : 'text-red-400'
+              return (
+                <div key={hand.id} className="bg-slate-800/40 border border-slate-700/30 rounded-xl px-4 py-3 flex justify-between items-center">
+                  <div className="flex items-center gap-3">
+                    <span className="text-white font-bold text-sm font-mono tracking-widest">{hand.scenario.holeCards}</span>
+                    <div className="flex gap-1.5">
+                      <span className="text-slate-500 text-xs">{hand.setup.position}</span>
+                      <span className="text-slate-600 text-xs">·</span>
+                      <span className="text-slate-500 text-xs">{hand.setup.stackDepth}</span>
+                      {hand.setup.isMultiway && <span className="text-slate-600 text-xs">· MW</span>}
+                    </div>
+                  </div>
+                  <span className={`text-base font-black ${c}`}>{sc}</span>
                 </div>
-                <span className={`text-sm font-bold ${
-                  hand.analysis.score >= 75 ? 'text-emerald-400' :
-                  hand.analysis.score >= 50 ? 'text-yellow-400' : 'text-red-400'
-                }`}>
-                  {hand.analysis.score}
-                </span>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}

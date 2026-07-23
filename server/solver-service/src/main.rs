@@ -19,6 +19,7 @@ struct SolveRequest {
     street_history: Vec<HistoryAction>, // actions taken THIS street before acting player
     acting_player_hand: String,     // "AcKs" — the player whose strategy we want
     acting_player_is_ip: bool,      // true if that player is in-position
+    iterations: Option<u32>,        // CFR iterations; defaults to 50
 }
 
 #[derive(Deserialize)]
@@ -169,9 +170,9 @@ fn solve_inner(req: SolveRequest) -> Json<SolveResponse> {
     let mut game = PostFlopGame::with_config(card_config, action_tree).unwrap();
     game.allocate_memory(false);
 
-    // 50 iterations / 10 % pot target — fast enough for real-time, accurate enough for coaching
+    let iters = req.iterations.unwrap_or(50);
     let target = pot_chips as f32 * 0.10;
-    let exploitability_chips = postflop_solver::solve(&mut game, 50, target, false);
+    let exploitability_chips = postflop_solver::solve(&mut game, iters, target, false);
 
     // Navigate to current node by replaying street_history.
     // Turn and river boards need a chance node played between streets.

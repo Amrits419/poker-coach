@@ -38,6 +38,7 @@ export async function callSolver(params: {
   streetHistory: { action: string; amount?: number }[]
   actingPlayerHand: string
   actingPlayerIsIP: boolean
+  iterations?: number
 }): Promise<SolverResult> {
   const res = await fetch(`${SOLVER_URL}/solve`, {
     method: 'POST',
@@ -53,6 +54,7 @@ export async function callSolver(params: {
       street_history:      params.streetHistory.map(h => ({ action: h.action, amount: h.amount ?? null })),
       acting_player_hand:  params.actingPlayerHand,
       acting_player_is_ip: params.actingPlayerIsIP,
+      iterations:          params.iterations ?? null,
     }),
   })
 
@@ -150,18 +152,22 @@ function streetHistoryBefore(
 
 // ── Public: get villain postflop action ───────────────────────────────────────
 
+const POSTFLOP_ORDER = ['SB', 'BB', 'UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN']
+
 export async function getVillainActionFromSolver(
   setup: Setup,
   startState: StartState,
   history: HandHistoryEntry[],
   currentStreet: string,
   pot: number,
-  effectiveStack: number
+  effectiveStack: number,
+  villainIndex: number = 0
 ): Promise<VillainResponse> {
   const { oopRange, ipRange } = getRangesForSpot(
     setup.position,
     startState.villainPositions,
     startState.heroIsIP,
+    startState.heroIsPFR,
     startState.preflopContext
   )
 
@@ -172,8 +178,14 @@ export async function getVillainActionFromSolver(
     .filter(h => h.street === currentStreet)
     .map(h => ({ action: h.action, amount: h.amount }))
 
-  const villainHand = startState.villainHoleCards[0]
-  const villainIsIP = !startState.heroIsIP
+  const villainHand = startState.villainHoleCards[villainIndex] ?? startState.villainHoleCards[0]
+
+  // Determine villain's IP/OOP status from their actual postflop position,
+  // not just as the inverse of heroIsIP (which breaks in multiway).
+  const heroPostflopIdx    = POSTFLOP_ORDER.indexOf(setup.position)
+  const villainPos         = startState.villainPositions[villainIndex] ?? startState.villainPositions[0]
+  const villainPostflopIdx = POSTFLOP_ORDER.indexOf(villainPos)
+  const villainIsIP        = villainPostflopIdx > heroPostflopIdx
 
   const solver = await callSolver({
     board,
@@ -189,7 +201,7 @@ export async function getVillainActionFromSolver(
 
   const explanation = await explainVillainAction(
     solver,
-    startState.villainPositions[0],
+    startState.villainPositions[villainIndex] ?? startState.villainPositions[0],
     setup.position,
     board,
     currentStreet,
@@ -246,6 +258,7 @@ export async function evalHeroDecision(
     setup.position,
     startState.villainPositions,
     startState.heroIsIP,
+    startState.heroIsPFR,
     startState.preflopContext
   )
 
@@ -262,6 +275,7 @@ export async function evalHeroDecision(
     streetHistory: streetHist,
     actingPlayerHand: startState.holeCards,
     actingPlayerIsIP: startState.heroIsIP,
+    iterations: 20,
   })
 
   return {
