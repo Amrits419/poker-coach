@@ -1,5 +1,5 @@
 import OpenAI from 'openai'
-import { getRangesForSpot } from './ranges'
+import { getRangesForSpot, POSTFLOP_ORDER } from './ranges'
 import type { Setup, StartState, HandHistoryEntry, VillainResponse } from './types'
 
 const SOLVER_URL = process.env.SOLVER_URL ?? 'http://127.0.0.1:3002'
@@ -58,7 +58,7 @@ export async function callSolver(params: {
     }),
   })
 
-  if (!res.ok) throw new Error(`Solver error: ${res.status}`)
+  if (!res.ok) throw new Error(`Solver error ${res.status}: ${await res.text()}`)
 
   const data = await res.json() as {
     action_frequencies: { action: string; amount: number | null; frequency: number }[]
@@ -92,7 +92,7 @@ async function explainVillainAction(
   board: string[],
   street: string,
   pot: number,
-  heroIsIP: boolean
+  villainIsIP: boolean
 ): Promise<string> {
   const freqSummary = solver.actionFrequencies
     .filter(a => a.frequency > 0.01)
@@ -106,7 +106,7 @@ async function explainVillainAction(
 
 Situation:
 - ${street}, board: ${board.join(' ')}, pot: ${pot}bb
-- Villain (${villainPosition}) is ${heroIsIP ? 'OOP' : 'IP'}
+- Villain (${villainPosition}) is ${villainIsIP ? 'IP' : 'OOP'}
 - Villain equity: ${(solver.equity * 100).toFixed(0)}%, EV: ${solver.ev.toFixed(1)}bb
 
 GTO frequencies: ${freqSummary}
@@ -151,8 +151,6 @@ function streetHistoryBefore(
 }
 
 // ── Public: get villain postflop action ───────────────────────────────────────
-
-const POSTFLOP_ORDER = ['SB', 'BB', 'UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN']
 
 export async function getVillainActionFromSolver(
   setup: Setup,
@@ -206,7 +204,7 @@ export async function getVillainActionFromSolver(
     board,
     currentStreet,
     pot,
-    startState.heroIsIP
+    villainIsIP
   )
 
   // Recompute pot/stack from the sampled action

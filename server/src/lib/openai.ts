@@ -5,7 +5,7 @@ import {
   evalHeroDecision,
   type HeroEval,
 } from './solver'
-import { getVillainPreflopDecision, isHandInRange, isHandIn3BetRange, willVillainDefend, OPEN_RANGES, isHandInCall3BetRange, call3BetRangeDesc } from './ranges'
+import { getVillainPreflopDecision, isHandInRange, isHandIn3BetRange, willVillainDefend, OPEN_RANGES, isHandInCall3BetRange, call3BetRangeDesc, isHeroInPosition } from './ranges'
 import type { Setup, StartState, HandHistoryEntry, VillainResponse, Analysis } from './types'
 
 export type { Setup, StartState, HandHistoryEntry, VillainResponse, Analysis }
@@ -15,7 +15,6 @@ const openai = new OpenAI({
   baseURL: 'https://api.groq.com/openai/v1',
 })
 
-const IP_POSITIONS = new Set(['CO', 'BTN', 'HJ'])
 const PREFLOP_ORDER_ALL = ['UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN', 'SB', 'BB']
 
 // Full preflop order — action goes in this sequence each street
@@ -92,7 +91,7 @@ function tryBuildScenario(setup: Setup, numVillains: number): StartState | null 
     return {
       holeCards: deal.heroCards, villainHoleCards: defenders.map(p => hand[p] ?? ''),
       villainPositions, board: deal.board,
-      heroIsIP: IP_POSITIONS.has(setup.position), heroIsPFR: true,
+      heroIsIP: isHeroInPosition(setup.position, villainPositions), heroIsPFR: true,
       preflopContext: ctx,
       pot: 1.5, effectiveStack: parseFloat(setup.stackDepth) - heroPosted,
       preflopRaiseAmount: null,
@@ -118,7 +117,7 @@ function tryBuildScenario(setup: Setup, numVillains: number): StartState | null 
     return {
       holeCards: deal.heroCards, villainHoleCards: villainPositions.map(p => hand[p] ?? ''),
       villainPositions, board: deal.board,
-      heroIsIP: IP_POSITIONS.has(setup.position), heroIsPFR: false,
+      heroIsIP: isHeroInPosition(setup.position, villainPositions), heroIsPFR: false,
       preflopContext: ctx,
       pot: Math.round((OPEN_SIZE + deadBlinds) * 10) / 10,
       effectiveStack: parseFloat(setup.stackDepth) - heroPosted,
@@ -134,7 +133,7 @@ function tryBuildScenario(setup: Setup, numVillains: number): StartState | null 
       villainHoleCards: [threeBettor.hand, opener.hand],
       villainPositions: [threeBettor.pos, opener.pos],
       board: deal.board,
-      heroIsIP: IP_POSITIONS.has(setup.position), heroIsPFR: false,
+      heroIsIP: isHeroInPosition(setup.position, [threeBettor.pos, opener.pos]), heroIsPFR: false,
       preflopContext: `${opener.pos} opens ${OPEN_SIZE}bb, ${threeBettor.pos} 3-bets to ${THREE_BET_SIZE}bb. You're in ${setup.position} facing a cold 3-bet.`,
       pot: Math.round((OPEN_SIZE + THREE_BET_SIZE + deadBlinds) * 10) / 10,
       effectiveStack: parseFloat(setup.stackDepth) - heroPosted,
@@ -277,19 +276,18 @@ export async function analyzeHand(
     .map((h, idx) => ({ h, idx }))
     .filter(({ h }) => h.actor === 'hero' && h.street !== 'Preflop')
 
-  let solverEvals: HeroEval[] = []
-  if (heroPostflopDecisions.length > 0) {
-    try {
-      // Approximate pot/stack at each decision by replaying history
-      solverEvals = await Promise.all(
-        heroPostflopDecisions.map(({ h, idx }) => {
-          const { pot, stack } = potStackAt(history, idx, startState.pot, startState.effectiveStack)
-          return evalHeroDecision(setup, startState, history, h, idx, pot, stack)
-        })
-      )
-    } catch (err) {
-      console.warn('Solver unavailable for analysis, proceeding without solver data:', err)
-    }
+  // Approximate pot/stack at each decision by replaying history. One failed solve
+  // (e.g. hero's hand outside the modeled range) shouldn't drop the others.
+  const settled = await Promise.allSettled(
+    heroPostflopDecisions.map(({ h, idx }) => {
+      const { pot, stack } = potStackAt(history, idx, startState.pot, startState.effectiveStack)
+      return evalHeroDecision(setup, startState, history, h, idx, pot, stack)
+    })
+  )
+  const solverEvals: HeroEval[] = []
+  for (const r of settled) {
+    if (r.status === 'fulfilled') solverEvals.push(r.value)
+    else console.warn('Solver eval failed, analyzing that decision without solver data:', r.reason)
   }
 
   return analyzeHandWithLLM(setup, startState, history, solverEvals)
@@ -551,11 +549,11 @@ async function analyzeHandWithLLM(
   // Range advantage context: tells LLM who has the stronger range on various boards
   const pfrPosition = startState.heroIsPFR ? setup.position : (startState.villainPositions[0] ?? 'villain')
   const callerPosition = startState.heroIsPFR ? (startState.villainPositions[0] ?? 'villain') : setup.position
-  const rangeAdvantageNote = `Range dynamics: ${pfrPosition} was the PFR (preflop raiser) with a tighter, stronger range. ${callerPosition} called with a wider, weaker range. On boards with high cards (Q, J, T, K, A) and/or connectivity, the PFR's range has a significant range advantage — the caller has more low pairs, suited connectors, and speculative hands that miss these boards. When ${startState.heroIsPFR ? 'hero' : 'villain'} is the PFR and the board is high/connected, ${startState.heroIsPFR ? 'hero has range advantage — betting is correct' : 'villain has range advantage — hero (caller) should check at a high frequency with weak made hands and unimproved pairs below the board'}.`
+  const rangeAdvantageNote = `Range dynamics: ${pfrPosition} was the PFR (preflop raiser). ${callerPosition} called. Which range a board favors depends on the specific ranges — e.g. high, dry boards (A-K-x, K-Q-x) usually favor the PFR, while middling connected boards (J-T-9, 9-8-7) often favor the caller, who has more sets, two pair and straights there. When solver data is available for a street, it already accounts for this.`
 
   // Format solver evaluations so the LLM can reference exact GTO frequencies
   const solverBlock = solverEvals.length > 0
-    ? `\nSOLVER DATA (use as a signal — cross-check with range advantage before concluding hero should bet):\n` +
+    ? `\nSOLVER DATA (authoritative for the streets it covers — base your verdict on it):\n` +
       solverEvals.map(e => {
         const gto = e.gtoFrequencies
           .filter(a => a.frequency > 0.02)
@@ -587,13 +585,8 @@ ${fullHistory}
 ${solverBlock}
 
 RULES — violating any of these makes the analysis useless:
-1. SOLVER DATA IS A SIGNAL, NOT GOSPEL. Cite the GTO% and equity from solver data, but always cross-check it against range advantage and board texture before recommending a bet. The solver runs with a simplified bet tree and limited iterations — its frequencies can be wrong on complex boards.
-2. RANGE ADVANTAGE CHECK (do this before every postflop street evaluation):
-   - Who is the PFR (preflop raiser)? Their range has more strong hands (overpairs, top pair top kicker, sets) than the caller's range.
-   - Does the board texture (high cards, connectivity, suits) connect better with the PFR's range or the caller's range?
-   - High connected boards (Q-J-9, K-Q-T, J-T-8) almost always favor the PFR's range — the caller's range is full of low pairs and speculative hands that miss.
-   - If the board heavily favors villain's range and hero is OOP (out of position), checking at a high frequency is correct EVEN IF the solver shows a moderate betting frequency. Pocket pairs below the board texture, gutshots, and overcardless hands should check on these boards.
-   - If hero is IP and the board favors villain's range, hero can still bet but must acknowledge the range disadvantage.
+1. SOLVER DATA IS THE GROUND TRUTH for the streets it covers. Cite the GTO% and equity it gives and base "correct" on it: an action the solver takes 30%+ of the time is "yes", 5-30% is "close", under 5% is "no". Your job is to EXPLAIN the solver's choice (board texture, range advantage, equity, blockers) — never contradict it. The solver uses a simplified tree with limited bet sizes (75% pot by default, 2.5x raises), so when hero used another size, judge the action (bet/check) by the solver and comment on sizing separately.
+2. RANGE ADVANTAGE: use it to explain the solver's numbers, and as your main reasoning only on streets without solver data. Do not assume high or connected boards automatically favor the PFR — middling connected boards (J-T-9, T-9-8) often favor the caller.
 3. BET SIZING MUST MATCH HAND STRENGTH AND GOAL:
    - WEAK two pair (paired the bottom board card with a shared community pair overhead, e.g. 23s on AAQT2) → treat like bottom pair. If the board favors villain's range (villain was the PFR with a tighter, stronger range, and the community pair connects with that range — e.g. AA board when villain opened, Kx board when villain raised from EP), CHECK. Villain's range is full of Ax/Kx hands that have hero crushed; betting for "value" is value-owning yourself. Only consider a tiny bet (20-25% pot) if villain's range is clearly capped and cannot have the community pair.
    - Thin value bets (second pair, weak top pair, marginal made hands) → use SMALL sizing (25-40% pot). Villain's calling range is narrow; a small bet gets called by more hands that beat nothing, maximizes EV against weak holdings, and loses less when villain has a strong hand.

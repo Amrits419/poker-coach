@@ -160,7 +160,13 @@ export function getRangesForSpot(
     : { oopRange: heroRange,   ipRange: villainRange }
 }
 
-const POSTFLOP_ORDER = ['SB', 'BB', 'UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN']
+export const POSTFLOP_ORDER = ['SB', 'BB', 'UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN']
+
+// Position is relative: a seat is IP only if it acts after every opponent postflop.
+export function isHeroInPosition(heroPosition: string, villainPositions: string[]): boolean {
+  const heroIdx = POSTFLOP_ORDER.indexOf(heroPosition)
+  return villainPositions.every(v => POSTFLOP_ORDER.indexOf(v) < heroIdx)
+}
 
 /**
  * Determine villain's preflop action using GTO range tables.
