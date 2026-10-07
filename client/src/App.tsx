@@ -9,10 +9,17 @@ import './index.css'
 
 type Screen = 'setup' | 'playing' | 'analysis' | 'dashboard'
 
-export default function App() {
-  const [userId, setUserId] = useState<string | null>(
-    localStorage.getItem('pokerCoachUserId')
+function Logo() {
+  return (
+    <span className="flex items-center gap-2">
+      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-[15px] font-black text-white shadow-[0_0_18px_rgba(139,124,255,0.45)]">♠</span>
+      <span className="text-[15px] font-bold tracking-tight text-white">Poker Coach</span>
+    </span>
   )
+}
+
+export default function App() {
+  const [userId, setUserId] = useState<string | null>(localStorage.getItem('pokerCoachUserId'))
   const [email, setEmail] = useState('')
   const [username, setUsername] = useState('')
   const [loginLoading, setLoginLoading] = useState(false)
@@ -23,23 +30,31 @@ export default function App() {
   const [currentAnalysis, setCurrentAnalysis] = useState<Analysis | null>(null)
   const [currentVillainDescs, setCurrentVillainDescs] = useState<VillainDesc[]>([])
   const [generating, setGenerating] = useState(false)
+  const [handKey, setHandKey] = useState(0)
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoginLoading(true)
-    const user = await createUser(email, username)
-    localStorage.setItem('pokerCoachUserId', user.id)
-    setUserId(user.id)
-    setLoginLoading(false)
+    try {
+      const user = await createUser(email, username)
+      localStorage.setItem('pokerCoachUserId', user.id)
+      setUserId(user.id)
+    } finally {
+      setLoginLoading(false)
+    }
   }
 
   const handleStart = async (setup: Setup) => {
     setGenerating(true)
-    setCurrentSetup(setup)
-    const state = await startHand(userId!, setup)
-    setCurrentStartState(state)
-    setScreen('playing')
-    setGenerating(false)
+    try {
+      setCurrentSetup(setup)
+      const state = await startHand(userId!, setup)
+      setCurrentStartState(state)
+      setHandKey(k => k + 1)
+      setScreen('playing')
+    } finally {
+      setGenerating(false)
+    }
   }
 
   const handleAnalysisDone = (analysis: Analysis, villainDescs: VillainDesc[]) => {
@@ -49,44 +64,33 @@ export default function App() {
   }
 
   const handleNextHand = () => {
-    setCurrentStartState(null)
-    setCurrentAnalysis(null)
+    if (currentSetup) { handleStart(currentSetup); return }
     setScreen('setup')
   }
 
   if (!userId) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6">
+      <div className="flex min-h-screen items-center justify-center p-6">
         <div className="w-full max-w-sm">
-          <div className="text-center mb-10">
-            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-600/20 border border-emerald-500/30 mb-4">
-              <span className="text-3xl">♠</span>
-            </div>
-            <h1 className="text-2xl font-bold text-white tracking-tight">Poker Coach</h1>
-            <p className="text-slate-400 text-sm mt-1.5">AI-powered GTO training</p>
+          <div className="mb-8 text-center">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent text-3xl font-black text-white shadow-[0_0_40px_rgba(139,124,255,0.45)]">♠</div>
+            <h1 className="text-2xl font-bold tracking-tight text-white">Poker Coach</h1>
+            <p className="mt-1.5 text-sm text-white/50">Play against a GTO solver. Get coached on every decision.</p>
           </div>
-          <form onSubmit={handleLogin} className="space-y-3">
-            <input
-              value={username}
-              onChange={e => setUsername(e.target.value)}
-              placeholder="Username"
-              required
-              className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors"
-            />
-            <input
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              placeholder="Email"
-              required
-              className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors"
-            />
-            <button
-              type="submit"
-              disabled={loginLoading}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold py-3 rounded-xl transition-colors mt-1"
-            >
-              {loginLoading ? 'Setting up...' : 'Start Training'}
+          <form onSubmit={handleLogin} className="space-y-3 rounded-2xl border border-ink-600/60 bg-ink-800/70 p-5">
+            <label className="block">
+              <span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/45">Username</span>
+              <input value={username} onChange={e => setUsername(e.target.value)} required
+                className="w-full rounded-xl border border-ink-500 bg-ink-900 px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-accent" />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/45">Email</span>
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
+                className="w-full rounded-xl border border-ink-500 bg-ink-900 px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-accent" />
+            </label>
+            <button type="submit" disabled={loginLoading}
+              className="mt-1 w-full rounded-xl bg-accent py-3 text-sm font-bold text-white transition-colors hover:bg-accent-dim disabled:bg-ink-600 disabled:text-white/40">
+              {loginLoading ? 'Setting up…' : 'Start training'}
             </button>
           </form>
         </div>
@@ -94,63 +98,41 @@ export default function App() {
     )
   }
 
+  const tabs: { id: Screen; label: string }[] = [{ id: 'setup', label: 'Train' }, { id: 'dashboard', label: 'Stats' }]
+  const activeTab: Screen = screen === 'dashboard' ? 'dashboard' : 'setup'
+
   return (
-    <div className="min-h-screen max-w-xl mx-auto px-4 pb-8">
-      {/* Header */}
-      <div className="flex items-center justify-between py-4 mb-2">
-        <button
-          onClick={() => setScreen('setup')}
-          className="flex items-center gap-2 group"
-        >
-          <div className="w-7 h-7 rounded-lg bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center">
-            <span className="text-sm">♠</span>
-          </div>
-          <span className="text-white font-bold text-sm tracking-tight">Poker Coach</span>
-        </button>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setScreen(screen === 'dashboard' ? 'setup' : 'dashboard')}
-            className={`text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${
-              screen === 'dashboard'
-                ? 'bg-slate-700 text-white'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            {screen === 'dashboard' ? '← Play' : 'Stats'}
-          </button>
-          <button
-            onClick={() => { localStorage.removeItem('pokerCoachUserId'); setUserId(null) }}
-            className="text-xs text-slate-600 hover:text-slate-400 px-2 py-1.5 transition-colors"
-          >
-            Out
-          </button>
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-40 border-b border-white/5 bg-ink-950/80 backdrop-blur-md">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-2.5">
+          <button onClick={() => setScreen('setup')}><Logo /></button>
+          <nav className="flex items-center gap-1 rounded-lg bg-ink-800 p-1">
+            {tabs.map(t => (
+              <button key={t.id} onClick={() => setScreen(t.id)}
+                className={`rounded-md px-3 py-1 text-[12px] font-semibold transition-colors ${
+                  activeTab === t.id ? 'bg-ink-600 text-white' : 'text-white/50 hover:text-white'
+                }`}>{t.label}</button>
+            ))}
+          </nav>
+          <button onClick={() => { localStorage.removeItem('pokerCoachUserId'); setUserId(null) }}
+            className="text-[12px] font-medium text-white/40 transition-colors hover:text-white">Sign out</button>
         </div>
-      </div>
+      </header>
 
-      {screen === 'setup' && (
-        <SetupScreen onStart={handleStart} loading={generating} />
-      )}
+      <main className="mx-auto max-w-6xl px-4 py-5">
+        {screen === 'setup' && <SetupScreen onStart={handleStart} loading={generating} />}
 
-      {screen === 'playing' && currentStartState && currentSetup && (
-        <HandTrainer
-          userId={userId}
-          setup={currentSetup}
-          startState={currentStartState}
-          onDone={handleAnalysisDone}
-        />
-      )}
+        {screen === 'playing' && currentStartState && currentSetup && (
+          <HandTrainer key={handKey} userId={userId} setup={currentSetup} startState={currentStartState} onDone={handleAnalysisDone} />
+        )}
 
-      {screen === 'analysis' && currentAnalysis && currentStartState && (
-        <AnalysisResult
-          analysis={currentAnalysis}
-          startState={currentStartState}
-          villainDescriptions={currentVillainDescs}
-          onNext={handleNextHand}
-          onMenu={() => setScreen('setup')}
-        />
-      )}
+        {screen === 'analysis' && currentAnalysis && currentStartState && (
+          <AnalysisResult analysis={currentAnalysis} startState={currentStartState} villainDescriptions={currentVillainDescs}
+            onNext={handleNextHand} onMenu={() => setScreen('setup')} nextLoading={generating} />
+        )}
 
-      {screen === 'dashboard' && <LeakDashboard userId={userId} />}
+        {screen === 'dashboard' && <LeakDashboard userId={userId} />}
+      </main>
     </div>
   )
 }

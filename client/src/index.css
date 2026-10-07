@@ -2,25 +2,53 @@
 @tailwind components;
 @tailwind utilities;
 
+:root { color-scheme: dark; }
+
 body {
   margin: 0;
-  background-color: #090d18;
-  color: #f1f5f9;
-  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+  background: #070a12;
+  color: #e5e9f2;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'tnum' 1, 'cv11' 1;
 }
 
-::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+::-webkit-scrollbar-thumb { background: #223050; border-radius: 3px; }
 
+/* ── Table animations ─────────────────────────────────────────────────── */
 @keyframes dealCard {
-  from { opacity: 0; transform: scale(0.55) translateY(-14px) rotate(-8deg); }
-  to   { opacity: 1; transform: scale(1)    translateY(0)      rotate(0deg);  }
+  from { opacity: 0; transform: translate(0, -40px) scale(0.6) rotate(-6deg); }
+  to   { opacity: 1; transform: translate(0, 0) scale(1) rotate(0); }
 }
-
 @keyframes muckCards {
-  0%   { opacity: 1; transform: scale(1)    translateY(0)    rotate(0deg);  }
-  25%  { opacity: 1; transform: scale(1.05) translateY(-5px) rotate(-3deg); }
-  100% { opacity: 0; transform: scale(0.3)  translateY(20px) rotate(18deg); }
+  0%   { opacity: 1; transform: scale(1) translateY(0); }
+  100% { opacity: 0; transform: scale(0.5) translateY(18px); }
 }
+@keyframes chipIn {
+  from { opacity: 0; transform: scale(0.4); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes pulseRing {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(139,124,255,0.95), 0 0 14px rgba(139,124,255,0.5); }
+  50%      { box-shadow: 0 0 0 2px rgba(139,124,255,0.5), 0 0 26px rgba(139,124,255,0.85); }
+}
+.seat-active { animation: pulseRing 1.6s ease-in-out infinite; }
+
+/* ── Bet slider ───────────────────────────────────────────────────────── */
+input[type='range'].bet-slider {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 6px; border-radius: 999px;
+  background: linear-gradient(90deg, #ff5c5c var(--fill, 0%), #223050 var(--fill, 0%));
+  outline: none;
+}
+input[type='range'].bet-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: #fff; border: 3px solid #ff5c5c;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5); cursor: pointer;
+}
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type='number'] { -moz-appearance: textfield; appearance: textfield; }

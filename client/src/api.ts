@@ -9,6 +9,7 @@ export interface Setup {
   position: string
   isMultiway: boolean
   stackDepth: string
+  betSize?: string   // solver bet size, % of pot: '33' | '50' | '75' | '100'
 }
 
 export interface StartState {
@@ -22,6 +23,7 @@ export interface StartState {
   pot: number
   effectiveStack: number
   preflopRaiseAmount: number | null
+  preflopBets?: Record<string, number>  // chips per position before hero's first action
 }
 
 export interface HandHistoryEntry {
@@ -29,6 +31,7 @@ export interface HandHistoryEntry {
   actor: 'hero' | 'villain'
   action: string
   amount?: number
+  villainIdx?: number  // client-only: which villain acted (for drawing chips)
 }
 
 export interface VillainResponse {
