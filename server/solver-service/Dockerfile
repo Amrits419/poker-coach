@@ -1,6 +1,9 @@
 # ── Build stage ──────────────────────────────────────────────────────────
 FROM rust:1.83-slim AS builder
 
+# Tune the solver for the CPU it is built on (the hot loops are SIMD-heavy)
+ENV RUSTFLAGS="-C target-cpu=native"
+
 WORKDIR /app
 
 # System deps needed to build postflop-solver's git dependency + rayon

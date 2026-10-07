@@ -18,6 +18,10 @@ services:
     build:
       context: ./server/solver-service
     restart: unless-stopped
+    environment:
+      # Solved trees are cached (a 100bb flop tree is ~2GB with compression); size to the VM
+      SOLVER_CACHE_MB: ${SOLVER_CACHE_MB:-3000}
+      SOLVER_TARGET_PCT: ${SOLVER_TARGET_PCT:-10}
     expose:
       - "3002"
 
@@ -28,7 +32,9 @@ services:
     environment:
       DATABASE_URL: postgresql://pokercoach:${POSTGRES_PASSWORD:-pokercoach}@postgres:5432/pokercoach
       GROQ_API_KEY: ${GROQ_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-oss-120b}
       SOLVER_URL: http://solver:3002
+      SOLVER_TIMEOUT_MS: ${SOLVER_TIMEOUT_MS:-120000}
       PORT: 3001
     depends_on:
       postgres:
