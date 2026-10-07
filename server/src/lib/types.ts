@@ -2,6 +2,13 @@ export interface Setup {
   position: string
   isMultiway: boolean
   stackDepth: string
+  betSize?: string   // solver's single bet size as % of pot, e.g. '33' | '50' | '75' | '100'
+}
+
+const BET_SIZES = new Set(['33', '50', '75', '100'])
+/** postflop-solver size string for a setup, or undefined to use the solver default */
+export function solverBetSizes(setup: Setup): string | undefined {
+  return setup.betSize && BET_SIZES.has(setup.betSize) ? `${setup.betSize}%` : undefined
 }
 
 export interface HandHistoryEntry {
@@ -22,6 +29,7 @@ export interface StartState {
   pot: number
   effectiveStack: number
   preflopRaiseAmount: number | null  // villain's open size when heroIsPFR=false, else null
+  preflopBets: Record<string, number> // chips each position has in front of them when hero first acts (blinds, open, 3-bet)
 }
 
 export interface VillainResponse {

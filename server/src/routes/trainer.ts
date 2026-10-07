@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express'
 import prisma from '../lib/prisma'
 import { startHand, getVillainAction, analyzeHand, Setup, HandHistoryEntry } from '../lib/openai'
+import { presolveFlop } from '../lib/solver'
+import { getVillainPreflopFrequencies } from '../lib/ranges'
+import type { StartState } from '../lib/types'
 
 const router = Router()
 
@@ -55,7 +58,35 @@ router.post('/start', async (req: Request, res: Response) => {
 
   const state = await startHand(setup)
   res.json(state)
+  predictAndPresolve(setup, state)
 })
+
+// Speculatively solve the flop while the user is still thinking preflop. Only
+// when the line is predictable: heads-up, and either hero faces a raise (we
+// assume a call) or hero opens 2.5bb (the client default) into a villain whose
+// range-table response is certain. A wrong guess costs nothing but CPU; a right
+// one hides most of the flop solve behind the preflop decision.
+function predictAndPresolve(setup: Setup, state: StartState | null) {
+  if (!state || state.villainPositions.length !== 1) return
+  const villainPos = state.villainPositions[0]
+  const heroBlind  = setup.position === 'BB' ? 1.0 : setup.position === 'SB' ? 0.5 : 0
+  if (!state.heroIsPFR) {
+    // Hero calls the raise in front of them
+    const call = state.preflopRaiseAmount ?? 0
+    if (!call) return
+    const pot   = Math.round((state.pot + call) * 10) / 10
+    const stack = Math.max(0, Math.round((state.effectiveStack - Math.max(0, call - heroBlind)) * 10) / 10)
+    presolveFlop(setup, state, pot, stack)
+    return
+  }
+  const OPEN = 2.5
+  const { aggrFreq, callFreq } = getVillainPreflopFrequencies(villainPos, state.villainHoleCards[0] ?? '', setup.position, true)
+  if (aggrFreq > 0 || callFreq <= 0) return   // villain might 3-bet or will fold: unpredictable / no flop
+  // Same arithmetic as calcPot(): villain's call adds (open - 1bb already posted)
+  const pot   = Math.round((state.pot + OPEN + Math.max(0, OPEN - 1)) * 10) / 10
+  const stack = Math.max(0, Math.round((state.effectiveStack - OPEN) * 10) / 10)
+  presolveFlop(setup, state, pot, stack)
+}
 
 // get villain's GTO response to the current situation
 router.post('/villain-act', async (req: Request, res: Response) => {
@@ -77,6 +108,12 @@ router.post('/villain-act', async (req: Request, res: Response) => {
   response.newStack = newStack
 
   res.json(response)
+
+  // Preflop just closed with a call: start the flop solve now, before the client
+  // has even animated the flop. Useful when hero is first to act on the flop.
+  if (currentStreet === 'Preflop' && response.action === 'call' && startState.villainPositions?.length === 1) {
+    presolveFlop(setup, startState, newPot, newStack)
+  }
 })
 
 // analyze the completed hand and save it

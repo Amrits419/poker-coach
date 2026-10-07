@@ -31,12 +31,56 @@ export function isHandInRange(hand: string, rangeStr: string): boolean {
   return freqInRange(hand, rangeStr) > 0
 }
 
+/** "8cJd" → "Jd8c": a single specific combo in postflop-solver syntax (higher rank first). */
+export function specificCombo(hand: string): string {
+  const r1 = hand[0], s1 = hand[1], r2 = hand[2], s2 = hand[3]
+  if (!r1 || !s1 || !r2 || !s2) return ''
+  return RANK_ORDER.indexOf(r1) >= RANK_ORDER.indexOf(r2) ? `${r1}${s1}${r2}${s2}` : `${r2}${s2}${r1}${s1}`
+}
+
+/** Hero can be dealt (and play) hands outside the modeled preflop range. The solver
+ *  can only grade a hand it knows about, so add that exact combo to hero's range. */
+export function withHandInRange(rangeStr: string, hand: string): string {
+  if (!hand || freqInRange(hand, rangeStr) > 0) return rangeStr
+  const combo = specificCombo(hand)
+  return combo ? `${rangeStr}, ${combo}` : rangeStr
+}
+
 export function isHandIn3BetRange(hand: string): boolean {
   return freqInRange(hand, THREE_BET_IP) > 0 || freqInRange(hand, THREE_BET_OOP) > 0
 }
 
 export function isHandInCall3BetRange(hand: string, heroIsIP: boolean): boolean {
   return freqInRange(hand, heroIsIP ? CALL_3BET_IP : CALL_3BET_OOP) > 0
+}
+
+/** Hero's GTO aggression/call frequencies for a preflop decision: facing a single
+ *  open (3-bet vs call) or facing a 3-bet (4-bet vs call). Drives the coach's
+ *  preflop verdict so premium pairs are never graded as "set-mining calls". */
+export function heroPreflopFrequencies(
+  hand: string,
+  heroIsIP: boolean,
+  facing: 'open' | '3bet',
+): { aggrFreq: number; callFreq: number; aggrRangeDesc: string; callRangeDesc: string } {
+  if (facing === '3bet') {
+    const callRng = heroIsIP ? CALL_3BET_IP : CALL_3BET_OOP
+    return {
+      aggrFreq: freqInRange(hand, FOUR_BET_RANGE),
+      callFreq: freqInRange(hand, callRng),
+      aggrRangeDesc: rangeDesc(FOUR_BET_RANGE),
+      callRangeDesc: call3BetRangeDesc(heroIsIP),
+    }
+  }
+  const aggrRng = heroIsIP ? THREE_BET_IP : THREE_BET_OOP
+  return { aggrFreq: freqInRange(hand, aggrRng), callFreq: 0, aggrRangeDesc: rangeDesc(aggrRng), callRangeDesc: '' }
+}
+
+/** "AA,KK,QQ:0.4" → "AA, KK, QQ (40%)" */
+function rangeDesc(rangeStr: string): string {
+  return rangeStr.split(',').map(p => {
+    const [h, f] = p.trim().split(':')
+    return f ? `${h} (${Math.round(parseFloat(f) * 100)}%)` : h
+  }).join(', ')
 }
 
 export function call3BetRangeDesc(heroIsIP: boolean): string {
@@ -123,7 +167,8 @@ export function getRangesForSpot(
   villainPositions: string[],
   heroIsIP: boolean,
   heroIsPFR: boolean,
-  preflopContext: string
+  preflopContext: string,
+  heroHand?: string,
 ): RangePair {
   const villain = villainPositions[0] ?? 'BB'
   const ctx = preflopContext.toLowerCase()
@@ -154,6 +199,8 @@ export function getRangesForSpot(
       : heroPosition === 'SB' ? SB_CALL_BTN : BB_CALL_DEFAULT
   }
 
+  if (heroHand) heroRange = withHandInRange(heroRange, heroHand)
+
   // Assign hero/villain ranges to the OOP and IP solver slots.
   return heroIsIP
     ? { oopRange: villainRange, ipRange: heroRange }
@@ -173,6 +220,29 @@ export function isHeroInPosition(heroPosition: string, villainPositions: string[
  * heroIsPFR=true  → hero opened; villain is defending (call/3-bet/fold).
  * heroIsPFR=false → villain opened; hero 3-bet; villain responds (call/4-bet/fold).
  */
+/** 3-bet/call frequencies for a villain facing hero's preflop action — lets the
+ *  server predict the postflop spot (and pre-solve it) when the decision is certain. */
+export function getVillainPreflopFrequencies(
+  actingPosition: string,
+  hand: string,
+  heroPosition: string,
+  heroIsPFR: boolean,
+): { aggrFreq: number; callFreq: number } {
+  const heroPostIdx  = POSTFLOP_ORDER.indexOf(heroPosition)
+  const villPostIdx  = POSTFLOP_ORDER.indexOf(actingPosition)
+  const villainIsOOP = villPostIdx !== -1 && heroPostIdx !== -1 && villPostIdx < heroPostIdx
+  let callRng = '', aggrRng = ''
+  if (heroIsPFR) {
+    if (actingPosition === 'BB')      { callRng = BB_CALL[heroPosition] ?? BB_CALL_DEFAULT; aggrRng = THREE_BET_OOP }
+    else if (actingPosition === 'SB') { callRng = SB_CALL_BTN; aggrRng = THREE_BET_OOP }
+    else { callRng = BB_CALL[heroPosition] ?? BB_CALL_DEFAULT; aggrRng = villainIsOOP ? THREE_BET_OOP : THREE_BET_IP }
+  } else {
+    callRng = villainIsOOP ? CALL_3BET_OOP : CALL_3BET_IP
+    aggrRng = FOUR_BET_RANGE
+  }
+  return { aggrFreq: freqInRange(hand, aggrRng), callFreq: freqInRange(hand, callRng) }
+}
+
 export function getVillainPreflopDecision(
   actingPosition: string,
   hand: string,

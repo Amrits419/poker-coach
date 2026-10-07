@@ -5,7 +5,8 @@ import {
   evalHeroDecision,
   type HeroEval,
 } from './solver'
-import { getVillainPreflopDecision, isHandInRange, isHandIn3BetRange, willVillainDefend, OPEN_RANGES, isHandInCall3BetRange, call3BetRangeDesc, isHeroInPosition } from './ranges'
+import { getVillainPreflopDecision, isHandInRange, isHandIn3BetRange, willVillainDefend, OPEN_RANGES, isHeroInPosition, POSTFLOP_ORDER, heroPreflopFrequencies } from './ranges'
+import { calcNewPot } from './solver'
 import type { Setup, StartState, HandHistoryEntry, VillainResponse, Analysis } from './types'
 
 export type { Setup, StartState, HandHistoryEntry, VillainResponse, Analysis }
@@ -14,6 +15,9 @@ const openai = new OpenAI({
   apiKey: process.env.GROQ_API_KEY,
   baseURL: 'https://api.groq.com/openai/v1',
 })
+
+// Groq retired llama-3.3-70b-versatile; override with LLM_MODEL if the default goes away too.
+const LLM_MODEL = process.env.LLM_MODEL ?? 'openai/gpt-oss-120b'
 
 const PREFLOP_ORDER_ALL = ['UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN', 'SB', 'BB']
 
@@ -69,6 +73,8 @@ function tryBuildScenario(setup: Setup, numVillains: number): StartState | null 
   const deadBlinds     = setup.position === 'BB' ? 0.5   // SB is dead
                        : setup.position === 'SB' ? 1.0   // BB is dead
                        : 1.5                             // both blinds dead
+  // Chips in front of each seat before hero acts — drawn on the table by the client
+  const blinds: Record<string, number> = { SB: 0.5, BB: 1.0 }
 
   // ── Case A: no raise before hero → hero opens ─────────────────────────────
   if (raiseLevel === 0) {
@@ -95,6 +101,7 @@ function tryBuildScenario(setup: Setup, numVillains: number): StartState | null 
       preflopContext: ctx,
       pot: 1.5, effectiveStack: parseFloat(setup.stackDepth) - heroPosted,
       preflopRaiseAmount: null,
+      preflopBets: { ...blinds },
     }
   }
 
@@ -122,6 +129,7 @@ function tryBuildScenario(setup: Setup, numVillains: number): StartState | null 
       pot: Math.round((OPEN_SIZE + deadBlinds) * 10) / 10,
       effectiveStack: parseFloat(setup.stackDepth) - heroPosted,
       preflopRaiseAmount: OPEN_SIZE,
+      preflopBets: { ...blinds, [opener.pos]: OPEN_SIZE },
     }
   }
 
@@ -138,6 +146,7 @@ function tryBuildScenario(setup: Setup, numVillains: number): StartState | null 
       pot: Math.round((OPEN_SIZE + THREE_BET_SIZE + deadBlinds) * 10) / 10,
       effectiveStack: parseFloat(setup.stackDepth) - heroPosted,
       preflopRaiseAmount: THREE_BET_SIZE,
+      preflopBets: { ...blinds, [opener.pos]: OPEN_SIZE, [threeBettor.pos]: THREE_BET_SIZE },
     }
   }
 
@@ -194,7 +203,21 @@ async function getVillainActionLLM(
   const actingPosition = startState.villainPositions[villainIndex] ?? startState.villainPositions[0]
   const actingHand = startState.villainHoleCards[villainIndex] ?? startState.villainHoleCards[0]
 
+  const villainIsIP = POSTFLOP_ORDER.indexOf(actingPosition) > POSTFLOP_ORDER.indexOf(setup.position)
+  const streetHist  = history.filter(h => h.street === currentStreet)
+  const lastBet     = [...streetHist].reverse().find(h => h.action === 'bet' || h.action === 'raise')
+  const postflopRules = currentStreet === 'Preflop' ? '' : `
+POSTFLOP RULES (mandatory):
+- You are ${villainIsIP ? 'IN POSITION' : 'OUT OF POSITION'}.
+- ${lastBet
+    ? `You are facing a ${lastBet.amount}bb ${lastBet.action}. Choose fold, call, or raise (raise to 2.2x-3x the bet).`
+    : villainIsIP
+      ? 'Hero checked to you. Choose check or bet (bet 33%-75% of the pot, never more than the pot).'
+      : 'You are first to act. Out of position you CHECK here — never lead into the preflop aggressor. You may check-raise later if hero bets.'}
+`
+
   const prompt = `You are a GTO NLHE poker AI playing as villain. Determine your optimal action.
+${postflopRules}
 
 Game state:
 - Hero position: ${setup.position} — hero is ${startState.heroIsIP ? 'IN POSITION (IP)' : 'OUT OF POSITION (OOP)'} post-flop
@@ -247,21 +270,67 @@ Return JSON only:
 }`
 
   const res = await openai.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
+    model: LLM_MODEL,
     messages: [{ role: 'user', content: prompt }],
     response_format: { type: 'json_object' },
     temperature: 0.3,
   })
 
   const data = JSON.parse(res.choices[0].message.content ?? '{}')
+  if (currentStreet === 'Preflop') {
+    return {
+      action:      data.action      ?? 'check',
+      amount:      data.amount      ?? undefined,
+      description: data.description ?? 'Villain checks',
+      potOdds:     data.potOdds     ?? null,
+      newPot:      data.newPot      ?? pot,
+      newStack:    data.newStack    ?? effectiveStack,
+      isHandOver:  data.isHandOver  ?? false,
+    }
+  }
+  return sanitizePostflopFallback(data, { villainIsIP, lastBetAmount: lastBet?.amount ?? null, pot, effectiveStack, history, street: currentStreet })
+}
+
+// The LLM fallback is only used when the solver is unavailable, and it is not
+// trusted with sizing or legality: this clamps its answer to a sane poker action.
+function sanitizePostflopFallback(
+  data: { action?: string; amount?: number; description?: string },
+  ctx: { villainIsIP: boolean; lastBetAmount: number | null; pot: number; effectiveStack: number; history: HandHistoryEntry[]; street: string },
+): VillainResponse {
+  const r1 = (n: number) => Math.round(n * 10) / 10
+  let action = (data.action ?? 'check').toLowerCase()
+  let amount: number | undefined = typeof data.amount === 'number' ? data.amount : undefined
+  const facing = ctx.lastBetAmount != null && ctx.lastBetAmount > 0
+
+  if (facing) {
+    if (action === 'bet') action = 'raise'
+    if (action === 'check') action = 'call'
+    if (!['fold', 'call', 'raise'].includes(action)) action = 'call'
+    if (action === 'call') amount = ctx.lastBetAmount!
+    if (action === 'raise') {
+      const lo = r1(ctx.lastBetAmount! * 2.2), hi = r1(ctx.lastBetAmount! * 3)
+      amount = Math.min(ctx.effectiveStack, Math.max(lo, Math.min(hi, amount ?? r1(ctx.lastBetAmount! * 2.5))))
+    }
+  } else {
+    if (!ctx.villainIsIP) action = 'check'                 // no donk bets out of position
+    if (action === 'raise') action = 'bet'
+    if (!['check', 'bet'].includes(action)) action = 'check'
+    if (action === 'bet') {
+      const lo = r1(ctx.pot * 0.33), hi = r1(ctx.pot)
+      amount = Math.min(ctx.effectiveStack, Math.max(lo, Math.min(hi, amount ?? r1(ctx.pot * 0.66))))
+    }
+  }
+  if (action === 'check' || action === 'fold') amount = undefined
+
+  const newPot = calcNewPot(ctx.pot, action, amount, ctx.history, ctx.street)
+  const newStack = Math.max(0, r1(ctx.effectiveStack - (action === 'check' || action === 'fold' ? 0 : amount ?? 0)))
+  const potOdds = (action === 'bet' || action === 'raise') && amount ? `${((newPot - amount) / amount).toFixed(1)}:1` : null
+  const verb = action === 'check' ? 'checks' : action === 'call' ? 'calls' : action === 'fold' ? 'folds' : `${action}s ${amount}bb`
   return {
-    action:      data.action      ?? 'check',
-    amount:      data.amount      ?? undefined,
-    description: data.description ?? 'Villain checks',
-    potOdds:     data.potOdds     ?? null,
-    newPot:      data.newPot      ?? pot,
-    newStack:    data.newStack    ?? effectiveStack,
-    isHandOver:  data.isHandOver  ?? false,
+    action, amount,
+    description: data.description ?? `Villain ${verb}`,
+    potOdds, newPot, newStack,
+    isHandOver: action === 'fold',
   }
 }
 
@@ -276,13 +345,9 @@ export async function analyzeHand(
     .map((h, idx) => ({ h, idx }))
     .filter(({ h }) => h.actor === 'hero' && h.street !== 'Preflop')
 
-  // Approximate pot/stack at each decision by replaying history. One failed solve
-  // (e.g. hero's hand outside the modeled range) shouldn't drop the others.
+  // One failed solve shouldn't drop the others.
   const settled = await Promise.allSettled(
-    heroPostflopDecisions.map(({ h, idx }) => {
-      const { pot, stack } = potStackAt(history, idx, startState.pot, startState.effectiveStack)
-      return evalHeroDecision(setup, startState, history, h, idx, pot, stack)
-    })
+    heroPostflopDecisions.map(({ h, idx }) => evalHeroDecision(setup, startState, history, h, idx))
   )
   const solverEvals: HeroEval[] = []
   for (const r of settled) {
@@ -291,27 +356,6 @@ export async function analyzeHand(
   }
 
   return analyzeHandWithLLM(setup, startState, history, solverEvals)
-}
-
-// Approximate pot and effective stack at position `idx` in history.
-function potStackAt(
-  history: HandHistoryEntry[],
-  idx: number,
-  startPot: number,
-  startStack: number
-): { pot: number; stack: number } {
-  let pot = startPot
-  let stack = startStack
-  for (let i = 0; i < idx; i++) {
-    const h = history[i]
-    const amt = h.amount ?? 0
-    if (h.action === 'bet' || h.action === 'raise') {
-      pot += amt; stack = h.actor === 'hero' ? stack - amt : stack
-    } else if (h.action === 'call') {
-      pot += amt
-    }
-  }
-  return { pot: Math.round(pot * 10) / 10, stack: Math.max(0, Math.round(stack * 10) / 10) }
 }
 
 function computeHeroMadeHand(holeCards: string, boardCards: string[]): string {
@@ -403,6 +447,26 @@ function computeHeroMadeHand(holeCards: string, boardCards: string[]): string {
   }
 
   return `NO MADE HAND — complete miss (neither hole card pairs with any board card)`
+}
+
+// Turn range frequencies into an unambiguous instruction for the coach. The
+// aggressive line (3-bet / 4-bet) is checked first: premium pairs are raises,
+// never "set-mining calls".
+function preflopVerdict(aggrFreq: number, callFreq: number, aggr: string, passive: string, neither: string): string {
+  const pct = Math.round(aggrFreq * 100)
+  if (aggrFreq >= 0.99) {
+    return `pure ${aggr} — GTO ${aggr}s this hand 100%. ${aggr} is correct; a flat ${passive} is a MISTAKE (it is not in the ${passive}ing range). Do NOT recommend ${passive}ing.`
+  }
+  if (aggrFreq >= 0.35) {
+    return `mixed — GTO ${aggr}s ${pct}% and ${passive}s ${100 - pct}%. BOTH ${aggr} and ${passive} are correct; grade either as correct, neither is a mistake.`
+  }
+  if (aggrFreq > 0) {
+    return `mostly ${passive} — GTO ${aggr}s only ${pct}% and ${passive}s the rest. ${passive} is the standard play; a ${aggr} is acceptable at low frequency and is NOT a mistake.`
+  }
+  if (callFreq > 0) {
+    return `${passive} — IN the ${passive} range (${Math.round(callFreq * 100)}%), NOT in the ${aggr} range. ${passive} is correct; ${aggr} is a mistake.`
+  }
+  return neither
 }
 
 function evalColdCallVsOpen(
@@ -521,29 +585,36 @@ async function analyzeHandWithLLM(
 
   // Preflop GTO context — no solver data exists for preflop; inject range facts to prevent hallucination
   const ctx = startState.preflopContext.toLowerCase()
-  const isFacing3Bet = ctx.includes('3-bet') || ctx.includes('3bet') || ctx.includes('cold 3-bet')
+  // Either the deal itself put hero against a 3-bet, or hero opened and a villain
+  // re-raised during the hand (the context string is written at deal time, so it
+  // can't know about that).
+  const villainReraised = startState.heroIsPFR && history.some(h => h.street === 'Preflop' && h.actor === 'villain' && h.action === 'raise')
+  const isFacing3Bet = ctx.includes('3-bet') || ctx.includes('3bet') || ctx.includes('cold 3-bet') || villainReraised
 
   let preflopRangeBlock = ''
+  const posLabel = startState.heroIsIP ? 'IP' : 'OOP'
   if (isFacing3Bet) {
-    const inRange = isHandInCall3BetRange(startState.holeCards, startState.heroIsIP)
+    const f = heroPreflopFrequencies(startState.holeCards, startState.heroIsIP, '3bet')
     preflopRangeBlock = `\nPreflop GTO context (NO solver data for preflop — use ONLY this):
-- Hero faces a 3-bet. GTO call range (${startState.heroIsIP ? 'IP' : 'OOP'}): ${call3BetRangeDesc(startState.heroIsIP)}
-- Hero's hand (${startState.holeCards}): ${inRange ? 'IN the call range — calling is correct' : 'NOT in the call range — folding is correct. Do NOT recommend calling.'}`
+- Hero faces a 3-bet (${posLabel}). GTO 4-bet range: ${f.aggrRangeDesc}. GTO call range: ${f.callRangeDesc}
+- Hero's hand (${startState.holeCards}): ${preflopVerdict(f.aggrFreq, f.callFreq, '4-bet', 'call', 'fold — the hand is in neither range. Do NOT recommend calling.')}`
   } else if (!startState.heroIsPFR) {
-    // Hero faces a single open raise — check if hand qualifies as a cold-call
+    // Hero faces a single open raise: 3-bet range first, then the cold-call heuristic
     const openerPos = startState.villainPositions[0] ?? 'unknown'
     const heroOpenRange = OPEN_RANGES[setup.position] ?? ''
     const inHeroRange = heroOpenRange ? isHandInRange(startState.holeCards, heroOpenRange) : false
     const EP_POSITIONS = ['UTG', 'UTG+1', 'MP']
     const openerIsTight = EP_POSITIONS.includes(openerPos)
 
-    const coldCallVerdict = evalColdCallVsOpen(
-      startState.holeCards, setup.position, inHeroRange, openerPos, openerIsTight, startState.heroIsIP
-    )
+    const f = heroPreflopFrequencies(startState.holeCards, startState.heroIsIP, 'open')
+    const verdict = f.aggrFreq > 0
+      ? preflopVerdict(f.aggrFreq, 0, '3-bet', 'call', '')
+      : evalColdCallVsOpen(startState.holeCards, setup.position, inHeroRange, openerPos, openerIsTight, startState.heroIsIP)
 
     preflopRangeBlock = `\nPreflop GTO context (NO solver data for preflop — use ONLY this):
 - Facing ${openerPos} single open (${openerIsTight ? 'tight EP range ~10-15%' : 'wider range ~18-50%'})
-- Cold-call verdict: ${coldCallVerdict}`
+- Hero's GTO 3-bet range (${posLabel}): ${f.aggrRangeDesc}
+- Verdict for hero's hand: ${verdict}`
   }
 
   // Range advantage context: tells LLM who has the stronger range on various boards
@@ -625,7 +696,7 @@ Return JSON only:
 }`
 
   const res = await openai.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
+    model: LLM_MODEL,
     messages: [{ role: 'user', content: prompt }],
     response_format: { type: 'json_object' },
     temperature: 0.2,
