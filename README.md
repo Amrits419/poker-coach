@@ -25,7 +25,7 @@ All four run together with Docker Compose (`docker-compose.yml`).
 ### Solver notes
 
 - Discounted CFR, 50 iterations, 10%-of-pot exploitability target
-- Roughly 7s per flop solve and 2s per river solve; solves run in `spawn_blocking` so the HTTP server stays responsive
+- Solves run in `spawn_blocking` so the HTTP server stays responsive; river solves are near-instant, flop solves take the longest (tens of seconds on a 4-core Docker VM)
 - Tree is rooted at the current street with the board already dealt, then replays the street's action history to reach the decision node
 - Integer chip arithmetic (1 bb = 100 chips)
 - Bet sizing abstraction defaults to 75% pot; override with `BET_SIZES` (e.g. `"33%, 75%"`)
