@@ -1,6 +1,9 @@
 import axios from 'axios'
 
-const api = axios.create({ baseURL: 'http://localhost:3001/api' })
+// Relative path — the nginx container proxies /api to the server container
+// in Docker, and the Vite dev-server proxy (vite.config.ts) does the same
+// for `npm run dev`, so this works unchanged in both environments.
+const api = axios.create({ baseURL: '/api' })
 
 export interface Setup {
   position: string

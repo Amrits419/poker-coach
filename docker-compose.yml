@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pokercoach
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pokercoach}
+      POSTGRES_DB: pokercoach
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pokercoach"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  solver:
+    build:
+      context: ./server/solver-service
+    restart: unless-stopped
+    expose:
+      - "3002"
+
+  server:
+    build:
+      context: ./server
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://pokercoach:${POSTGRES_PASSWORD:-pokercoach}@postgres:5432/pokercoach
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      SOLVER_URL: http://solver:3002
+      PORT: 3001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      solver:
+        condition: service_started
+    expose:
+      - "3001"
+
+  client:
+    build:
+      context: ./client
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "${CLIENT_PORT:-5173}:80"
+
+volumes:
+  postgres-data:
