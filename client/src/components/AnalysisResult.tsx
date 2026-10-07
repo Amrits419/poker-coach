@@ -22,27 +22,10 @@ function Card({ card }: { card: string }) {
   )
 }
 
-function FaceDownSmall() {
-  return (
-    <div className="rounded-md shadow" style={{
-      width: 28, height: 40,
-      background: 'linear-gradient(150deg, #991b1b 0%, #7f1d1d 100%)',
-      border: '1px solid #dc2626',
-    }}>
-      <div style={{ margin: 2, height: 'calc(100% - 4px)', borderRadius: 2, border: '1px solid rgba(252,165,165,0.2)' }} />
-    </div>
-  )
-}
-
 function parseCards(str: string): string[] {
   return str.match(/.{2}/g) ?? []
 }
 
-const CORRECT_COLOR: Record<string, string> = {
-  yes: 'text-emerald-400',
-  close: 'text-yellow-400',
-  no: 'text-red-400',
-}
 const CORRECT_LABEL: Record<string, string> = {
   yes: 'Correct',
   close: 'Close',

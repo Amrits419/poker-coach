@@ -1,6 +1,10 @@
 # ── Build stage ──────────────────────────────────────────────────────────
 FROM node:24-slim AS builder
 
+# Prisma's engines need OpenSSL
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY package*.json ./
@@ -14,6 +18,9 @@ RUN npm run build
 # ── Runtime stage ────────────────────────────────────────────────────────
 FROM node:24-slim AS runtime
 
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 ENV NODE_ENV=production
 
@@ -25,8 +32,9 @@ COPY --from=builder /app/dist ./dist
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
-USER appuser
+# node:24-slim already ships a non-root `node` user (uid 1000)
+RUN chown -R node:node /app
+USER node
 
 EXPOSE 3001
 
