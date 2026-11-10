@@ -25,7 +25,14 @@ The **Sessions** tab imports a hand-history file in PokerStars format (PokerStar
 
 The rundown shows hands played, VPIP/PFR, result in bb and bb/100, an average score over the hands you played, your biggest mistakes, leaks grouped by spot (e.g. "Preflop · facing an open · call", "Turn · call"), results by position, and a filterable hand list. Each hand opens the same coaching view as the trainer plus the solver's action mix, the assumed ranges, the sizing note and the raw hand text. Grading runs in the background, persists per hand, and resumes after a server restart; Groq rate limits are retried with backoff.
 
-PokerNow logs (the .csv from Log → Download) import directly. For sites without an export, like ClubGG, [`recorder/`](recorder/README.md) is a small menu-bar app (Swift, ScreenCaptureKit + Apple Vision) that keeps a **text-only** log of the table while you play (no screenshots) and opens the report when you end the session; with PokerNow it picks up the game log you downloaded instead. Nothing is shown during play. Rebuilding hands from a screen-read log needs a one-time calibration from a real session (plan: [`docs/SESSION_RECORDER_PLAN.md`](docs/SESSION_RECORDER_PLAN.md)).
+PokerNow logs (the .csv from Log → Download) import directly.
+
+### Poker Recorder (work in progress)
+
+For sites without an export, like ClubGG, [`recorder/`](recorder/README.md) is a small menu-bar app (Swift, ScreenCaptureKit + Apple Vision) that keeps a **text-only** log of the table while you play (no screenshots) and opens the report when you end the session. Nothing is shown during play.
+
+- **Working today:** capturing the table to a text log, and PokerNow sessions, where the recorder picks up the game log you downloaded and the hands are graded.
+- **In the works:** turning a screen-read log (ClubGG and other desktop apps) into hands. That needs card recognition calibrated from a real session, so those sessions are saved but not graded yet (plan: [`docs/SESSION_RECORDER_PLAN.md`](docs/SESSION_RECORDER_PLAN.md)).
 
 ## Architecture
 

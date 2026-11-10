@@ -1,7 +1,12 @@
 # Poker Recorder
 
+> **Work in progress.** Capture works for every table below, and PokerNow sessions are
+> graded end to end from the downloaded game log. Reports from screen-read sessions
+> (ClubGG and the other desktop apps) are in the works: those sessions are saved but not
+> graded yet.
+
 A small macOS menu-bar app that keeps a text log of the poker table while you play and
-gives you a Poker Coach report when you end the session. It works with ClubGG, PokerNow
+gives you a Poker Coach report when you end the session. It captures ClubGG, PokerNow
 in the browser, and other desktop poker apps (PokerStars, GGPoker, WPT Global, ACR, …).
 
 - **Start session**: whenever the table changes (checked twice a second), it reads the
