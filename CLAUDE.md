@@ -60,14 +60,24 @@ server/
       cards.ts       — deck dealing utilities
     routes/
       trainer.ts     — Express routes (/start, /table, /villain-act, /explain, /analyze)
+      sessions.ts    — hand-history import, session + hand reads, regrade, recorder capture
+    lib/hh/          — PokerStars / PokerNow parsers, positions, preflop verdicts, hand → solver spots
+    lib/session/     — background grader and session summary
   solver-service/
-    src/main.rs      — Rust Axum service, POST /solve endpoint
+    src/main.rs      — Rust Axum service, POST /solve and POST /presolve, solve cache
     Cargo.toml       — git dep: postflop-solver (NOT on crates.io)
 
 client/
   src/
     components/
-      HandTrainer.tsx  — main game UI
+      Setup.tsx          — position, stack, bet-size setup
+      HandTrainer.tsx    — table, action bar, hand log; keeps only the action history and draws the server's TableState
+      AnalysisResult.tsx — post-hand coaching view (result banner, grades)
+      LeakDashboard.tsx  — Stats tab (the user asked to leave it alone)
+      sessions/          — import, session rundown, hand drill-down
+    api.ts             — typed API client (relative /api base URL)
+
+recorder/              — Swift menu-bar app, see Poker Recorder below
 ```
 
 ## Solver Design (main.rs)
@@ -90,10 +100,12 @@ client/
 
 ## Hybrid LLM + Solver Pipeline
 
-1. **Preflop**: LLM (`LLM_MODEL`, default `openai/gpt-oss-120b` via Groq) handles all decisions
-2. **Postflop villain action**: Solver computes GTO frequencies → samples action → LLM explains the *why* in 1-2 sentences
-3. **Hand analysis**: Solver evaluates every hero postflop decision in parallel → injects `SOLVER GROUND TRUTH` block into LLM analysis prompt
-4. **Fallback**: If solver is down, all paths fall back to LLM
+1. **Preflop villain**: range tables (`villainPreflopAction`), no LLM call
+2. **Postflop villain action**: heads-up street in a raised pot → solver computes GTO frequencies → sampled action; the LLM (`LLM_MODEL`, default `openai/gpt-oss-120b` via Groq) words the *why* in 1-2 sentences in the background (`/explain`). Multiway streets and limped pots → LLM picks the action, clamped by `legalize()`
+3. **Hand analysis**: Solver evaluates every hero postflop decision in parallel → injects `SOLVER GROUND TRUTH` block into LLM analysis prompt; preflop decisions get `trainerPreflopFacts()` lines from the range tables
+4. **Fallback**: If solver is down or times out, postflop paths fall back to the LLM (still clamped)
+
+Known rough edges (2026-11-10): the background explanation of a villain action sometimes names hole cards or misstates a number; limped and multiway pots have no solver grading.
 
 ## Sessions (imported real hands) — added 2026-10-08
 
@@ -101,7 +113,7 @@ Phase 1 of `docs/SESSION_RECORDER_PLAN.md`. Flow: `POST /api/sessions/import {us
 - Imported hands bypass the trainer engine and `solverSpot()`: the mapper computes exact street-start pot (incl. dead money) and effective stack, ranges from the preflop line (`rangesFromLine`), and a tree size per street (nearest of 50/75/100% to the first bet; >35% pot off → that street is coach-only). The grader calls `callSolver` directly, then `analyzeHandWithLLM(..., { preflopFacts, notes })`, with the importer's own preflop verdicts as the preflop block.
 - History `call` amounts are the total called to on that street (trainer convention), not the chips added.
 - Re-grade a session (or only some modes): `POST /api/sessions/:id/regrade?modes=solver_llm,llm_only`.
-- Test fixtures are real PokerNow hands in `server/src/lib/hh/__fixtures__/`.
+- Test fixtures in `server/src/lib/hh/__fixtures__/` are real hands, **anonymized** (players are Hero / Alice / Bob / ..., PokerNow ids `player000N`, hand ids and dates replaced). The repo is public: never commit raw hand histories or real nicknames, and anonymize any new fixture the same way.
 - Groq free tier rate-limits a full session (~30 coach calls); expect a few minutes of 429 retries.
 
 ## Poker Recorder (recorder/) — added 2026-10-08
@@ -131,12 +143,16 @@ PORT=3001
 
 ## GitHub
 
-`github.com/Amrits419/poker-coach` — last commit `dafd4d5` (Docker + README)
+`github.com/Amrits419/poker-coach` (public). As of 2026-11-10 the hand engine, Sessions and recorder work is on branch `trainer-hand-engine` (pushed); `origin/main` is still at `dafd4d5` and local `main` is 4 commits ahead of it. `gh` is not installed, so pull requests are opened in the browser. Stage files by name, not `git add -A`.
+
+## Testing without Postgres
+
+The trainer runs with only the solver, the server and Vite (saving the hand fails and is logged, nothing else breaks). `npm test` in `server/` needs neither the database nor the solver. Driving `/api/trainer/*` with a script against the live solver is the quickest way to check many hands end to end.
 
 ## LLM Details
 
 - Provider: Groq (OpenAI-compatible endpoint)
 - Model: `process.env.LLM_MODEL ?? 'openai/gpt-oss-120b'` (llama-3.3-70b-versatile returned 404 model_not_found on 2026-10-07; account lists gpt-oss-120b/20b and qwen3.8-27b)
-- Used for: preflop villain decisions, villain action explanations, full hand analysis
+- Used for: villain actions in multiway / limped pots (and when the solver is down), villain action explanations, full hand analysis
 - baseURL: `https://api.groq.com/openai/v1`
 - Client: `openai` npm package pointed at Groq's base URL via `GROQ_API_KEY`

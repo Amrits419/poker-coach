@@ -1,6 +1,6 @@
 # AI Poker Coach
 
-Play heads-up poker hands against a solver-driven villain and get coaching on every decision. A Rust game-theory solver computes the GTO strategy; an LLM explains *why* instead of guessing.
+Play poker hands, heads-up or multiway, against a solver-driven villain and get coaching on every decision, or import a real session and have every hand graded. A Rust game-theory solver computes the GTO strategy; an LLM explains *why* instead of guessing.
 
 ## How it works
 
@@ -41,7 +41,7 @@ All four run together with Docker Compose (`docker-compose.yml`).
 ### Solver notes
 
 - Discounted CFR to a 10%-of-pot exploitability target (checked every 5 iterations after 15; converges in ~30), capped at 50
-- **Solved trees are cached** by spot (board, ranges, street-start pot and stack, street, bet size) in a memory-bounded LRU, and identical concurrent requests coalesce onto one solve. A flop solve therefore answers the villain's action, every later query on that street, and the post-hand grading of each decision in milliseconds. The API server replays the hand history to derive the street-start pot and stack with the same arithmetic the client uses, so play and grading always hit the same cache entry; trees used in the last 10 minutes are never evicted, even when one tree exceeds the budget
+- **Solved trees are cached** by spot (board, ranges, street-start pot and stack, street, bet size) in a memory-bounded LRU, and identical concurrent requests coalesce onto one solve. A flop solve therefore answers the villain's action, every later query on that street, and the post-hand grading of each decision in milliseconds. Every solver request (villain action, pre-solve, grading) is built in one place from the hand engine's replay of the action history, so play and grading always hit the same cache entry; trees used in the last 10 minutes are never evicted, even when one tree exceeds the budget
 - **Speculative pre-solving:** `POST /presolve` warms the cache; the API server calls it when a hand is dealt (for predictable preflop lines) and again the moment preflop closes, so the flop is usually solved before the user looks at it
 - 16-bit compressed storage (half the memory, ~20% faster); deep raise wars collapse into all-ins (`force_allin_threshold` 0.4), which halves solve time and memory at the same exploitability
 - Measured on an M2 (8 threads): a 100bb BTN-vs-BB flop at 75% solves in ~12-15 s and uses ~1.1 GB; turn/river solves take a second or less. Smaller bet sizes allow more raise rounds, so their trees are bigger (33% is 2-3.6 GB and solves proportionally slower)
@@ -94,18 +94,37 @@ PORT=3001
 
 `gpt-oss` is a reasoning model: calls with a `max_tokens` cap pass `reasoning_effort: low`, otherwise the reasoning consumes the budget and the visible text is truncated.
 
+## How a trainer hand runs
+
+The hand engine (`server/src/lib/engine.ts`) is a pure function: `replay(setup, startState, history)` turns the list of actions so far into the pot, every stack, the legal bet sizes, whose turn it is, and, once the hand is over, who won. The client keeps only that action list and draws the table state the server sends back:
+
+| Route | When | Returns |
+|---|---|---|
+| `POST /api/trainer/start` | deal a hand | cards, blinds and the first table state |
+| `POST /api/trainer/table` | after each hero action | the new table state |
+| `POST /api/trainer/villain-act` | while a villain is to act (one villain per call) | the villain's action and the new table state |
+| `POST /api/trainer/explain` | in the background | the coach's wording for a villain action |
+| `POST /api/trainer/analyze` | hand over | grades, coaching and the result |
+
+Bets and raises are recorded as the total in front of the player on that street ("raise to"), calls as the total called to, in big blinds to 0.01.
+
+Known limits: the solver covers heads-up streets in raised pots only, so multiway streets and limped pots are played and graded by the LLM; the solver tree has one bet size per street, so the villain's sizing does not vary within a hand.
+
 ## Tests
 
 ```bash
 cd server/solver-service && cargo test --release   # tree navigation, strategy lookup
-cd server && npm test                              # position logic, preflop verdicts, pot/stack replay, hand-history import
+cd server && npm test                              # hand engine, hand evaluator, villain preflop policy, position logic, hand-history import
 ```
+
+The server tests need neither the database nor the solver. The hand-history fixtures in `server/src/lib/hh/__fixtures__/` are real hands with every player name, id and date replaced.
 
 ## Key files
 
 ```
 server/src/lib/openai.ts     hand orchestration: startHand, getVillainAction, analyzeHand (+ preflop coaching context)
 server/src/lib/engine.ts     the hand engine: replays a hand's actions into pot, stacks, whose turn it is and the result
+server/src/lib/handEval.ts   best five of seven cards, for showdowns
 server/src/lib/solver.ts     HTTP client for the Rust solver, the solver spot for a street, pre-solve, LLM explanations
 server/src/lib/ranges.ts     preflop opening / 3-bet / 4-bet / defending ranges by position
 server/src/routes/trainer.ts /start, /table, /villain-act, /explain, /analyze (+ speculative pre-solve)
