@@ -1,53 +1,17 @@
 import { Router, Request, Response } from 'express'
 import prisma from '../lib/prisma'
-import { startHand, getVillainAction, analyzeHand, Setup, HandHistoryEntry } from '../lib/openai'
-import { presolveFlop } from '../lib/solver'
-import { getVillainPreflopFrequencies } from '../lib/ranges'
+import { startHand, getVillainAction, analyzeHand, villainCertainlyCalls, Setup, HandHistoryEntry } from '../lib/openai'
+import { presolveFlop, explainVillainAction, plainDescription, type ExplainContext } from '../lib/solver'
+import { replay, tableView, optionsFor, type HandState } from '../lib/engine'
 import type { StartState } from '../lib/types'
 
 const router = Router()
 
-// Compute pot/stack deterministically — don't trust LLM math
-function calcPot(
-  pot: number,
-  effectiveStack: number,
-  history: HandHistoryEntry[],
-  currentStreet: string,
-  villainAction: string,
-  villainAmount: number | undefined
-): { newPot: number; newStack: number } {
-  const rev = [...history].reverse()
-  const heroAct  = rev.find(h => h.actor === 'hero'    && h.street === currentStreet)
-  const prevVill = rev.find(h => h.actor === 'villain'  && h.street === currentStreet)
+// The server is the single source of truth for the state of a hand: the client
+// sends the deal and the action history, and every number it shows (pot, stacks,
+// who acts, what a call costs) comes back from the engine's replay.
 
-  // Hero's raise/bet this action (calls tracked separately below)
-  const heroRaise = (heroAct?.action === 'raise' || heroAct?.action === 'bet')
-    ? (heroAct.amount ?? 0) : 0
-
-  // If hero called villain's bet, the call amount equals villain's prior bet
-  const heroCall = heroAct?.action === 'call' ? (prevVill?.amount ?? 0) : 0
-
-  // On preflop BB's first action, BB already has 1bb in the pot
-  const villainActedBefore = history.some(h => h.actor === 'villain' && h.street === currentStreet)
-  const bbAlreadyIn = (currentStreet === 'Preflop' && !villainActedBefore) ? 1 : 0
-
-  let newPot   = pot + heroRaise + heroCall
-  let newStack = effectiveStack - heroRaise - heroCall
-
-  if (villainAction === 'call' && heroRaise > 0) {
-    newPot += Math.max(0, heroRaise - bbAlreadyIn)
-  } else if ((villainAction === 'bet' || villainAction === 'raise') && villainAmount) {
-    newPot += villainAmount
-    // hero hasn't responded yet — stack stays as-is after hero's own bet
-  }
-
-  return {
-    newPot:   Math.round(newPot   * 10) / 10,
-    newStack: Math.round(Math.max(0, newStack) * 10) / 10,
-  }
-}
-
-// start a new hand — returns hole cards, board, preflop context
+// start a new hand — returns the deal and the table as hero first sees it
 router.post('/start', async (req: Request, res: Response) => {
   const { userId, setup } = req.body as { userId: string; setup: Setup }
 
@@ -56,63 +20,108 @@ router.post('/start', async (req: Request, res: Response) => {
     return
   }
 
-  const state = await startHand(setup)
-  res.json(state)
-  predictAndPresolve(setup, state)
+  try {
+    const startState = await startHand(setup)
+    res.json({ startState, table: tableView(replay(setup, startState, []), startState) })
+    predictAndPresolve(setup, startState)
+  } catch (err) {
+    console.error('Could not deal a hand:', err)
+    res.status(500).json({ error: 'Could not deal a hand' })
+  }
 })
 
 // Speculatively solve the flop while the user is still thinking preflop. Only
 // when the line is predictable: heads-up, and either hero faces a raise (we
 // assume a call) or hero opens 2.5bb (the client default) into a villain whose
-// range-table response is certain. A wrong guess costs nothing but CPU; a right
-// one hides most of the flop solve behind the preflop decision.
-function predictAndPresolve(setup: Setup, state: StartState | null) {
-  if (!state || state.villainPositions.length !== 1) return
-  const villainPos = state.villainPositions[0]
-  const heroBlind  = setup.position === 'BB' ? 1.0 : setup.position === 'SB' ? 0.5 : 0
-  if (!state.heroIsPFR) {
-    // Hero calls the raise in front of them
-    const call = state.preflopRaiseAmount ?? 0
-    if (!call) return
-    const pot   = Math.round((state.pot + call) * 10) / 10
-    const stack = Math.max(0, Math.round((state.effectiveStack - Math.max(0, call - heroBlind)) * 10) / 10)
-    presolveFlop(setup, state, pot, stack)
-    return
+// range-table response is certainly a call. A wrong guess costs nothing but CPU;
+// a right one hides most of the flop solve behind the preflop decision. The
+// guess goes through the same replay as real play, so it lands on the same
+// solver cache entry.
+function predictAndPresolve(setup: Setup, startState: StartState) {
+  if (startState.villainPositions.length !== 1) return
+  const first = replay(setup, startState, [])
+  const o = optionsFor(first, 'hero')
+  const guess: HandHistoryEntry[] = []
+  if (first.raisers.length > 0) {
+    guess.push({ street: 'Preflop', actor: 'hero', action: 'call', amount: o.toCall })
+  } else {
+    guess.push({ street: 'Preflop', actor: 'hero', action: 'raise', amount: 2.5 })
+    const afterOpen = replay(setup, startState, guess)
+    if (afterOpen.toAct !== 0 || !villainCertainlyCalls(startState, afterOpen, 0)) return
+    guess.push({ street: 'Preflop', actor: 'villain', action: 'call', amount: 2.5, villainIdx: 0 })
   }
-  const OPEN = 2.5
-  const { aggrFreq, callFreq } = getVillainPreflopFrequencies(villainPos, state.villainHoleCards[0] ?? '', setup.position, true)
-  if (aggrFreq > 0 || callFreq <= 0) return   // villain might 3-bet or will fold: unpredictable / no flop
-  // Same arithmetic as calcPot(): villain's call adds (open - 1bb already posted)
-  const pot   = Math.round((state.pot + OPEN + Math.max(0, OPEN - 1)) * 10) / 10
-  const stack = Math.max(0, Math.round((state.effectiveStack - OPEN) * 10) / 10)
-  presolveFlop(setup, state, pot, stack)
+  presolveIfFlopJustDealt(setup, startState, guess, replay(setup, startState, guess))
 }
 
-// get villain's GTO response to the current situation
-router.post('/villain-act', async (req: Request, res: Response) => {
-  const { setup, startState, history, currentStreet, currentBoard, pot, effectiveStack, actingVillainIndex } = req.body
-  const villainIndex: number = typeof actingVillainIndex === 'number' ? actingVillainIndex : 0
+// Preflop just closed: start the flop solve now, before anyone has to act on it.
+function presolveIfFlopJustDealt(setup: Setup, startState: StartState, history: HandHistoryEntry[], state: HandState) {
+  if (state.street === 'Flop' && !state.over && !history.some(h => h.street === 'Flop')) {
+    presolveFlop(setup, startState, state)
+  }
+}
 
-  if (!setup || !startState || !currentStreet) {
+interface HandBody { setup?: Setup; startState?: StartState; history?: HandHistoryEntry[] }
+
+// the table after the given history — called once hero has acted
+router.post('/table', (req: Request, res: Response) => {
+  const { setup, startState, history = [] } = req.body as HandBody
+  if (!setup || !startState) {
+    res.status(400).json({ error: 'Missing required fields' })
+    return
+  }
+  const state = replay(setup, startState, history)
+  res.json({ table: tableView(state, startState) })
+  presolveIfFlopJustDealt(setup, startState, history, state)
+})
+
+// the next villain's action — the client calls this while the table says a villain is to act
+router.post('/villain-act', async (req: Request, res: Response) => {
+  const { setup, startState, history = [] } = req.body as HandBody
+  if (!setup || !startState) {
     res.status(400).json({ error: 'Missing required fields' })
     return
   }
 
-  const response = await getVillainAction(
-    setup, startState, history ?? [], currentStreet, currentBoard ?? [], pot, effectiveStack, villainIndex
-  )
+  const state = replay(setup, startState, history)
+  if (state.over || typeof state.toAct !== 'number') {
+    res.status(409).json({ error: 'No villain is to act', table: tableView(state, startState) })
+    return
+  }
+  const villainIdx = state.toAct
 
-  // Override AI's pot/stack — LLMs are unreliable at arithmetic
-  const { newPot, newStack } = calcPot(pot, effectiveStack, history ?? [], currentStreet, response.action, response.amount)
-  response.newPot   = newPot
-  response.newStack = newStack
+  try {
+    const decision = await getVillainAction(setup, startState, history, state, villainIdx)
+    const entry: HandHistoryEntry = {
+      street: state.street, actor: 'villain', action: decision.action, amount: decision.amount, villainIdx,
+    }
+    const newHistory = [...history, entry]
+    const next = replay(setup, startState, newHistory)
+    res.json({
+      entry,
+      history: newHistory,
+      description: decision.description,
+      explain: decision.explain ?? null,
+      table: tableView(next, startState),
+    })
+    presolveIfFlopJustDealt(setup, startState, newHistory, next)
+  } catch (err) {
+    console.error('Villain action failed:', err)
+    res.status(502).json({ error: 'Villain action failed', detail: String((err as Error)?.message ?? err) })
+  }
+})
 
-  res.json(response)
-
-  // Preflop just closed with a call: start the flop solve now, before the client
-  // has even animated the flop. Useful when hero is first to act on the flop.
-  if (currentStreet === 'Preflop' && response.action === 'call' && startState.villainPositions?.length === 1) {
-    presolveFlop(setup, startState, newPot, newStack)
+// why the solver's villain did what it did — fetched in the background during play
+router.post('/explain', async (req: Request, res: Response) => {
+  const ctx = (req.body as { explain?: ExplainContext }).explain
+  if (!ctx?.villainPosition || !ctx.action || !Array.isArray(ctx.frequencies) || !Array.isArray(ctx.board)) {
+    res.status(400).json({ error: 'explain context required' })
+    return
+  }
+  try {
+    res.json({ description: await explainVillainAction(ctx) })
+  } catch (err) {
+    console.warn('Explanation failed, using the plain description:', (err as Error)?.message ?? err)
+    res.json({ description: plainDescription(ctx.villainPosition, ctx.action, ctx.amount) })
   }
 })
 
@@ -131,7 +140,7 @@ router.post('/analyze', async (req: Request, res: Response) => {
   }
 
   try {
-    const analysis = await analyzeHand(setup, startState as any, history)
+    const analysis = await analyzeHand(setup, startState as StartState, history)
 
     // Return analysis immediately — don't block on DB save
     res.json({ analysis })

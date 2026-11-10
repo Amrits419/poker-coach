@@ -1,0 +1,34 @@
+PokerStars Hand #1002: Hold'em No Limit ($0.25/$0.50 USD) - 2026/01/01 21:57:35 ET
+Table 'PNLogConverter' 10-max Seat #1 is the button
+Seat 1: Alice ($20.12 in chips)
+Seat 3: Carol ($46.60 in chips)
+Seat 8: Hero ($50.00 in chips)
+Seat 10: Dave ($72.98 in chips)
+Carol: posts small blind $0.25
+Hero: posts big blind $0.50
+*** HOLE CARDS ***
+Dealt to Hero [4h 7s]
+Dave: folds
+Alice: raises $1.00 to $1.50
+Carol: folds
+Hero: calls $1.00
+*** FLOP *** [5s Jd 9d]
+Hero: checks
+Alice: checks
+*** TURN *** [5s Jd 9d] [4s]
+Hero: checks
+Alice: checks
+*** RIVER *** [5s Jd 9d 4s] [Ac]
+Hero: checks
+Alice: checks
+Hero: shows [4h 7s]
+Alice: shows [8s 5h]
+*** SHOW DOWN ***
+Alice collected $3.25 from pot
+*** SUMMARY ***
+Total pot: $3.25 | Rake 0
+Board [5s Jd 9d 4s Ac]
+Seat 1: Alice (button) showed [8s 5h] and won ($3.25) with a pair of Fives
+Seat 3: Carol (small blind) folded before Flop
+Seat 8: Hero (big blind) showed [4h 7s] and lost with a pair of Fours
+Seat 10: Dave folded before Flop (didn't bet)

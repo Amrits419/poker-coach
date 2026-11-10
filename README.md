@@ -4,8 +4,8 @@ Play heads-up poker hands against a solver-driven villain and get coaching on ev
 
 ## How it works
 
-1. **Preflop** — the villain plays from position-based opening, 3-bet, and defending range tables, with the LLM (an open-weight model served by Groq, `openai/gpt-oss-120b` by default) narrating the decision.
-2. **Postflop villain action** — the Rust solver computes GTO action frequencies for the current spot, the villain samples an action from them, and the LLM writes a one- or two-sentence explanation of the play. An out-of-position villain never leads into the preflop aggressor (it checks, and can check-raise); an in-position villain bets when checked to or raises when the solver says so.
+1. **Preflop** — the villain plays from position-based opening, defending, 3-bet, 4-bet and call-a-jam range tables, so 3-bet and 4-bet pots play out properly and carry the right ranges to the flop.
+2. **Postflop villain action** — the Rust solver computes GTO action frequencies for the current spot and the villain samples an action from them. An LLM (an open-weight model served by Groq, `openai/gpt-oss-120b` by default) writes a one- or two-sentence explanation of each play in the background, shown after the hand. An out-of-position villain never donk-bets into your initiative (it checks, and can check-raise); with the initiative itself, or in position, it bets and raises as the solver says. Multiway streets and limped pots are outside the two-player solver, so the LLM plays the villain there with its action clamped to a legal one.
 3. **Hand analysis** — after the hand, every hero postflop decision is graded by the solver (the spots are already cached from play, so grading is instant) and the numbers are injected into the LLM prompt as ground truth. Preflop decisions are graded against the range tables: 3-bet / 4-bet ranges are checked first, so premium pairs are never mistaken for set-mining calls.
 4. **Fallback** — if the solver is unavailable, every path falls back to the LLM alone, with the LLM's sizing and legality clamped server-side.
 
@@ -13,7 +13,19 @@ Villain hole cards are never revealed during play; they're shown only in the pos
 
 ## Playing
 
-The setup screen picks the hero's seat (all eight positions), heads-up or multiway, the effective stack (25–200bb), and the **solver bet size** (33 / 50 / 75 / 100% of pot) used for the hand. The table shows the blinds and the open or 3-bet as chips in front of each seat, the dealer button, the pot and pot odds, a pulsing ring on the seat to act, and a hand log with colored action tags. Hero bets with a slider or presets (fractions of the pot, or multiples of the bet when facing one). After the hand: a score, the coach's verdict, a decision-by-decision breakdown with the better play, what the villain was doing on each street, and drills to run next. The Stats tab aggregates leaks across saved hands.
+The setup screen picks the hero's seat (all eight positions), heads-up or multiway, the effective stack (25–200bb), and the **solver bet size** (33 / 50 / 75 / 100% of pot) used for the hand. The table shows the blinds and the open or 3-bet as chips in front of each seat, the dealer button, the pot and pot odds, a pulsing ring on the seat to act, and a hand log with colored action tags. Hero bets with a slider or presets (fractions of the pot, or multiples of the bet when facing one), or from the keyboard (F fold, C check/call, R bet/raise). The server's hand engine is the single source of truth for the pot, stacks, legal bet sizes and whose turn it is; an all-in and a call runs the board out. After the hand: who won and for how much, a score, the coach's verdict, a decision-by-decision breakdown with the better play, what the villain was doing on each street, and drills to run next. The Stats tab aggregates leaks across saved hands.
+
+## Sessions: grade your real hands
+
+The **Sessions** tab imports a hand-history file in PokerStars format (PokerStars, GGPoker exports, or a PokerNow log run through a converter) and grades every hand you were dealt:
+
+- **Hands that end preflop for you** are graded instantly from the range tables (open, defend, 3-bet, 4-bet), with no LLM call. Spots the tables only approximate, like limped pots, cold calls and straddles, are labelled.
+- **Heads-up postflop hands** go to the solver. The importer works out positions for 2–10 players, assumes each player's range from their preflop line (open vs defend, 3-bet vs call, 4-bet vs call), computes the exact street-start pot including dead money, and snaps real bet sizes to the nearest 50/75/100% tree. The coach then explains the solver's numbers.
+- **Multiway pots and unmodelled lines** are graded by the coach alone and badged "Coach only".
+
+The rundown shows hands played, VPIP/PFR, result in bb and bb/100, an average score over the hands you played, your biggest mistakes, leaks grouped by spot (e.g. "Preflop · facing an open · call", "Turn · call"), results by position, and a filterable hand list. Each hand opens the same coaching view as the trainer plus the solver's action mix, the assumed ranges, the sizing note and the raw hand text. Grading runs in the background, persists per hand, and resumes after a server restart; Groq rate limits are retried with backoff.
+
+PokerNow logs (the .csv from Log → Download) import directly. For sites without an export, like ClubGG, [`recorder/`](recorder/README.md) is a small menu-bar app (Swift, ScreenCaptureKit + Apple Vision) that keeps a **text-only** log of the table while you play (no screenshots) and opens the report when you end the session; with PokerNow it picks up the game log you downloaded instead. Nothing is shown during play. Rebuilding hands from a screen-read log needs a one-time calibration from a real session (plan: [`docs/SESSION_RECORDER_PLAN.md`](docs/SESSION_RECORDER_PLAN.md)).
 
 ## Architecture
 
@@ -86,19 +98,24 @@ PORT=3001
 
 ```bash
 cd server/solver-service && cargo test --release   # tree navigation, strategy lookup
-cd server && npm test                              # position logic, preflop range verdicts, street-start pot/stack replay
+cd server && npm test                              # position logic, preflop verdicts, pot/stack replay, hand-history import
 ```
 
 ## Key files
 
 ```
 server/src/lib/openai.ts     hand orchestration: startHand, getVillainAction, analyzeHand (+ preflop coaching context)
-server/src/lib/solver.ts     HTTP client for the Rust solver, pre-solve, street-start pot/stack replay, LLM explanations
+server/src/lib/engine.ts     the hand engine: replays a hand's actions into pot, stacks, whose turn it is and the result
+server/src/lib/solver.ts     HTTP client for the Rust solver, the solver spot for a street, pre-solve, LLM explanations
 server/src/lib/ranges.ts     preflop opening / 3-bet / 4-bet / defending ranges by position
-server/src/routes/trainer.ts /start, /villain-act, /analyze (+ speculative pre-solve)
+server/src/routes/trainer.ts /start, /table, /villain-act, /explain, /analyze (+ speculative pre-solve)
+server/src/routes/sessions.ts  /preview, /import, session + hand reads, /:id/regrade
+server/src/lib/hh/           PokerStars parser, positions, preflop range verdicts, hand → solver spots
+server/src/lib/session/      background grader (triage, retries) and session summary
 server/solver-service/src/main.rs   Axum service: POST /solve, POST /presolve, cache
 client/src/components/Setup.tsx          position, stack, bet-size setup
 client/src/components/HandTrainer.tsx    table, action bar, hand log
 client/src/components/AnalysisResult.tsx post-hand coaching view
 client/src/components/LeakDashboard.tsx  stats tab
+client/src/components/sessions/          import, session rundown, hand drill-down
 ```

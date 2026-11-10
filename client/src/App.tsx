@@ -1,13 +1,14 @@
 import { useState } from 'react'
-import type { Setup, StartState, Analysis } from './api'
+import type { Setup, StartState, Analysis, TableState } from './api'
 import { createUser, startHand } from './api'
 import SetupScreen from './components/Setup'
 import HandTrainer, { type VillainDesc } from './components/HandTrainer'
 import AnalysisResult from './components/AnalysisResult'
 import LeakDashboard from './components/LeakDashboard'
+import SessionsPage from './components/sessions/SessionsPage'
 import './index.css'
 
-type Screen = 'setup' | 'playing' | 'analysis' | 'dashboard'
+type Screen = 'setup' | 'playing' | 'analysis' | 'dashboard' | 'sessions'
 
 function Logo() {
   return (
@@ -24,9 +25,13 @@ export default function App() {
   const [username, setUsername] = useState('')
   const [loginLoading, setLoginLoading] = useState(false)
 
-  const [screen, setScreen] = useState<Screen>('setup')
+  // Poker Recorder opens /?capture=<folder> when a recorded session ends
+  const [captureDir] = useState(() => new URLSearchParams(window.location.search).get('capture'))
+  const [screen, setScreen] = useState<Screen>(captureDir ? 'sessions' : 'setup')
   const [currentSetup, setCurrentSetup] = useState<Setup | null>(null)
   const [currentStartState, setCurrentStartState] = useState<StartState | null>(null)
+  const [currentTable, setCurrentTable] = useState<TableState | null>(null)
+  const [startError, setStartError] = useState<string | null>(null)
   const [currentAnalysis, setCurrentAnalysis] = useState<Analysis | null>(null)
   const [currentVillainDescs, setCurrentVillainDescs] = useState<VillainDesc[]>([])
   const [generating, setGenerating] = useState(false)
@@ -46,12 +51,17 @@ export default function App() {
 
   const handleStart = async (setup: Setup) => {
     setGenerating(true)
+    setStartError(null)
     try {
       setCurrentSetup(setup)
-      const state = await startHand(userId!, setup)
-      setCurrentStartState(state)
+      const { startState, table } = await startHand(userId!, setup)
+      setCurrentStartState(startState)
+      setCurrentTable(table)
       setHandKey(k => k + 1)
       setScreen('playing')
+    } catch (err) {
+      console.error(err)
+      setStartError('Could not deal a hand — is the server running?')
     } finally {
       setGenerating(false)
     }
@@ -98,8 +108,8 @@ export default function App() {
     )
   }
 
-  const tabs: { id: Screen; label: string }[] = [{ id: 'setup', label: 'Train' }, { id: 'dashboard', label: 'Stats' }]
-  const activeTab: Screen = screen === 'dashboard' ? 'dashboard' : 'setup'
+  const tabs: { id: Screen; label: string }[] = [{ id: 'setup', label: 'Train' }, { id: 'sessions', label: 'Sessions' }, { id: 'dashboard', label: 'Stats' }]
+  const activeTab: Screen = screen === 'dashboard' || screen === 'sessions' ? screen : 'setup'
 
   return (
     <div className="min-h-screen">
@@ -120,10 +130,14 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-5">
+        {startError && (screen === 'setup' || screen === 'analysis') && (
+          <p className="mx-auto mb-4 max-w-4xl rounded-xl border border-raise/40 bg-raise/10 px-4 py-2.5 text-[13px] text-raise">{startError}</p>
+        )}
+
         {screen === 'setup' && <SetupScreen onStart={handleStart} loading={generating} />}
 
-        {screen === 'playing' && currentStartState && currentSetup && (
-          <HandTrainer key={handKey} userId={userId} setup={currentSetup} startState={currentStartState} onDone={handleAnalysisDone} />
+        {screen === 'playing' && currentStartState && currentSetup && currentTable && (
+          <HandTrainer key={handKey} userId={userId} setup={currentSetup} startState={currentStartState} initialTable={currentTable} onDone={handleAnalysisDone} />
         )}
 
         {screen === 'analysis' && currentAnalysis && currentStartState && (
@@ -132,6 +146,8 @@ export default function App() {
         )}
 
         {screen === 'dashboard' && <LeakDashboard userId={userId} />}
+
+        {screen === 'sessions' && <SessionsPage userId={userId} captureDir={captureDir} />}
       </main>
     </div>
   )

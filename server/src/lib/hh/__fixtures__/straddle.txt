@@ -1,0 +1,49 @@
+PokerStars Hand #1004: Hold'em No Limit ($0.25/$0.50 USD) - 2026/01/01 22:37:39 ET
+Table 'PNLogConverter' 10-max Seat #4 is the button
+Seat 1: Dave ($125.28 in chips)
+Seat 3: Carol ($58.62 in chips)
+Seat 4: Bob ($160.92 in chips)
+Seat 5: Alice ($51.73 in chips)
+Seat 8: Hero ($194.20 in chips)
+Seat 9: Erin ($20.00 in chips)
+Seat 10: Grace ($159.25 in chips)
+Alice: posts small blind $0.25
+Hero: posts big blind $0.50
+Erin: straddle $1.00
+*** HOLE CARDS ***
+Dealt to Hero [Kd Jd]
+Grace: raises $2.25 to $3.25
+Dave: calls $3.25
+Carol: calls $3.25
+Bob: folds
+Alice: folds
+Hero: folds
+Erin: raises $13.75 to $17.00
+Grace: calls $13.75
+Dave: folds
+Carol: calls $13.75
+*** FLOP *** [5s Jc 6c]
+Erin: bets $3.00
+Grace: raises $14.75 to $17.75
+Carol: raises $23.87 to $41.62
+Grace: calls $23.87
+Carol: shows [5c]
+Carol: shows [Ac]
+Erin: shows [7s 8d]
+Grace: shows [Ad Js]
+*** TURN *** [5s Jc 6c] [4d]
+*** RIVER *** [5s Jc 6c 4d] [8h]
+*** SHOW DOWN ***
+Erin collected $64.00 from pot
+Grace collected $77.24 from pot
+Dave: shows [6s 6d]
+*** SUMMARY ***
+Total pot: $141.24 | Rake 0
+Board [5s Jc 6c 4d 8h]
+Seat 1: Dave folded before Flop [6s 6d]
+Seat 3: Carol showed [Ac] and lost with high card Ace
+Seat 4: Bob (button) folded before Flop (didn't bet)
+Seat 5: Alice (small blind) folded before Flop
+Seat 8: Hero (big blind) folded before Flop
+Seat 9: Erin showed [7s 8d] and won ($64.00) with a straight, Four to Eight
+Seat 10: Grace showed [Ad Js] and won ($77.24) with a pair of Jacks

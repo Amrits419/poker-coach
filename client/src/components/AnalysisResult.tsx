@@ -2,6 +2,7 @@ import type { Analysis, StartState } from '../api'
 import type { VillainDesc } from './HandTrainer'
 import { Card } from './Card'
 import { parseCards } from '../lib/cards'
+import { fmtBb, netTone } from '../lib/format'
 
 const VERDICT: Record<string, { label: string; cls: string; bar: string }> = {
   yes:   { label: 'Correct', cls: 'border-call/40 bg-call/15 text-call',   bar: 'bg-call' },
@@ -16,6 +17,9 @@ interface Props {
   onNext: () => void
   onMenu: () => void
   nextLoading?: boolean
+  nextLabel?: string
+  menuLabel?: string
+  hideActions?: boolean
 }
 
 function Panel({ title, children, className = '' }: { title?: string; children: React.ReactNode; className?: string }) {
@@ -27,13 +31,22 @@ function Panel({ title, children, className = '' }: { title?: string; children: 
   )
 }
 
-export default function AnalysisResult({ analysis, startState, villainDescriptions, onNext, onMenu, nextLoading }: Props) {
+export default function AnalysisResult({ analysis, startState, villainDescriptions, onNext, onMenu, nextLoading, nextLabel = 'Next hand →', menuLabel = 'Change setup', hideActions = false }: Props) {
   const heroCards = parseCards(startState.holeCards)
   const board = [...startState.board.flop, startState.board.turn, startState.board.river].filter(Boolean)
   const score = Math.max(0, Math.min(100, analysis.score))
   const scoreTone = score >= 75 ? 'text-call' : score >= 50 ? 'text-amber-300' : 'text-raise'
   const scoreBar = score >= 75 ? 'bg-call' : score >= 50 ? 'bg-amber-400' : 'bg-raise'
   const counts = analysis.streetFeedback.reduce((acc, s) => { acc[s.correct] = (acc[s.correct] ?? 0) + 1; return acc }, {} as Record<string, number>)
+
+  // How the hand ended (trainer hands only). Kept apart from the score on purpose:
+  // the score grades the decisions, not the outcome.
+  const r = analysis.result
+  const resultText = !r ? null
+    : r.how === 'fold' ? (r.outcome === 'won' ? 'Villain folded' : 'You folded')
+    : r.outcome === 'split' ? `Split pot — both players have ${r.heroHand}`
+    : r.outcome === 'won' ? `You won at showdown with ${r.heroHand} against ${r.villainHand}`
+    : `You lost at showdown: ${r.villainPosition ?? 'villain'} had ${r.villainHand} against your ${r.heroHand}`
 
   return (
     <div className="mx-auto max-w-5xl space-y-4">
@@ -77,6 +90,12 @@ export default function AnalysisResult({ analysis, startState, villainDescriptio
         </Panel>
 
         <Panel title="Coach verdict" className="flex flex-col">
+          {r && (
+            <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-ink-900/60 px-3.5 py-2">
+              <span className="text-[13px] text-white/70">{resultText}</span>
+              <span className={`shrink-0 text-[15px] font-extrabold ${netTone(r.netBb)}`}>{fmtBb(r.netBb)}</span>
+            </div>
+          )}
           <p className="text-[14px] leading-relaxed text-white/85">{analysis.summary}</p>
           {analysis.leaks.length > 0 && (
             <div className="mt-auto pt-4">
@@ -132,7 +151,7 @@ export default function AnalysisResult({ analysis, startState, villainDescriptio
             </div>
           </Panel>
         )}
-        <Panel title="Drill next">
+        {(analysis.studyPlan?.length ?? 0) > 0 && <Panel title="Drill next">
           <ol className="space-y-2.5">
             {analysis.studyPlan.map((item, i) => (
               <li key={i} className="flex gap-3">
@@ -141,18 +160,18 @@ export default function AnalysisResult({ analysis, startState, villainDescriptio
               </li>
             ))}
           </ol>
-        </Panel>
+        </Panel>}
       </div>
 
-      <div className="flex justify-end gap-2 pb-4">
+      {!hideActions && <div className="flex justify-end gap-2 pb-4">
         <button onClick={onMenu} className="rounded-xl border border-ink-500 bg-ink-800 px-5 py-3 text-sm font-semibold text-white/70 transition-colors hover:text-white">
-          Change setup
+          {menuLabel}
         </button>
         <button onClick={onNext} disabled={nextLoading}
           className="rounded-xl bg-accent px-6 py-3 text-sm font-bold text-white shadow-[0_8px_30px_rgba(139,124,255,0.3)] transition-colors hover:bg-accent-dim disabled:bg-ink-600 disabled:text-white/40 disabled:shadow-none">
-          {nextLoading ? 'Dealing…' : 'Next hand →'}
+          {nextLoading ? 'Dealing…' : nextLabel}
         </button>
-      </div>
+      </div>}
     </div>
   )
 }

@@ -13,6 +13,7 @@ model User {
   username  String        @unique
   createdAt DateTime      @default(now())
   hands     TrainerHand[]
+  sessions  Session[]
 }
 
 model TrainerHand {
@@ -25,4 +26,58 @@ model TrainerHand {
   analysis    Json?
   leaks       String[]
   createdAt   DateTime @default(now())
+}
+
+// A batch of real hands: an imported hand-history file now, a ClubGG recording later.
+model Session {
+  id          String         @id @default(cuid())
+  userId      String
+  user        User           @relation(fields: [userId], references: [id])
+  name        String
+  source      String         // "pokerstars_import" | "clubgg_capture"
+  site        String?
+  heroName    String
+  status      String         // grading | done | failed | needs_calibration
+  captureDir  String?        // PokerRecorder session folder (screen-captured sessions)
+  captureInfo Json?          // frames, duration, what the recognizer found
+  stakes      String?        // "0.25/0.50 USD"
+  handsTotal  Int            @default(0)
+  handsGraded Int            @default(0)
+  error       String?
+  startedAt   DateTime?
+  createdAt   DateTime       @default(now())
+  hands       RecordedHand[]
+
+  @@unique([userId, captureDir])   // one session per recording (NULLs don't collide)
+}
+
+model RecordedHand {
+  id            String    @id @default(cuid())
+  sessionId     String
+  session       Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  seq           Int
+  externalId    String?
+  hhText        String    // PokerStars-format text: the source of truth
+  heroPosition  String?
+  heroCards     String?
+  board         String[]
+  playersDealt  Int
+  heroVoluntary Boolean   @default(false)
+  heroPfr       Boolean   @default(false)
+  sawFlop       Boolean   @default(false)
+  netBb         Float     @default(0)
+  gradeMode     String    // solver_llm | llm_only | preflop_rule | skipped
+  gradeNote     String?
+  startState    Json?
+  analysis      Json?     // same shape as TrainerHand.analysis
+  details       Json?     // per-decision grading details (solver mixes, preflop rule mixes, notes)
+  score         Int?
+  mistakes      Int       @default(0)
+  leaks         String[]
+  gradedAt      DateTime?
+  error         String?
+  createdAt     DateTime  @default(now())
+
+  @@unique([sessionId, seq])
+  @@index([sessionId, gradedAt])
 }

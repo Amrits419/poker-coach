@@ -2,8 +2,6 @@
 // These are used to seed the solver with realistic starting ranges.
 // Frequencies after ":" are between 0 and 1 (omitting = 1.0 = always in range).
 
-import type { VillainResponse } from './types'
-
 const RANK_ORDER = '23456789TJQKA'
 
 function normalizeHand(hand: string): string {
@@ -14,7 +12,7 @@ function normalizeHand(hand: string): string {
   return hi === lo ? `${hi}${hi}` : `${hi}${lo}${sh === sl ? 's' : 'o'}`
 }
 
-function freqInRange(hand: string, rangeStr: string): number {
+export function freqInRange(hand: string, rangeStr: string): number {
   if (!rangeStr) return 0
   const norm = normalizeHand(hand)
   for (const part of rangeStr.split(',')) {
@@ -115,7 +113,7 @@ export const OPEN_RANGES: Record<string, string> = {
 }
 
 // BB calling ranges vs different open positions
-const BB_CALL: Record<string, string> = {
+export const BB_CALL: Record<string, string> = {
   BTN:    'AA,KK,QQ,JJ,TT,99,88,77,66,55,44,33,22,AKs,AQs,AJs,ATs,A9s,A8s,A7s,A6s,A5s,A4s,A3s,A2s,KQs,KJs,KTs,K9s,K8s,QJs,QTs,Q9s,JTs,J9s,J8s,T9s,T8s,98s,97s,87s,86s,76s,75s,65s,54s,AKo,AQo,AJo,ATo,A9o,KQo,KJo,QJo,JTo',
   CO:     'AA,KK,QQ,JJ,TT,99,88,77,66,55,44,33,22,AKs,AQs,AJs,ATs,A9s,A8s,A7s,A6s,A5s,A4s,KQs,KJs,KTs,K9s,QJs,QTs,Q9s,JTs,J9s,T9s,98s,87s,76s,65s,AKo,AQo,AJo,ATo,KQo,KJo,QJo',
   HJ:     'AA,KK,QQ,JJ,TT,99,88,77,66,55,44,33,AKs,AQs,AJs,ATs,A9s,A8s,A7s,A5s,A4s,KQs,KJs,KTs,QJs,QTs,JTs,T9s,98s,87s,76s,AKo,AQo,AJo,ATo,KQo,KJo',
@@ -123,21 +121,21 @@ const BB_CALL: Record<string, string> = {
   'UTG+1':'AA,KK,QQ,JJ,TT,99,88,77,66,55,AKs,AQs,AJs,ATs,A9s,A8s,A5s,KQs,KJs,KTs,QJs,JTs,T9s,98s,AKo,AQo,AJo,KQo',
   UTG:    'AA,KK,QQ,JJ,TT,99,88,77,66,55,AKs,AQs,AJs,ATs,A9s,A5s,KQs,KJs,KTs,QJs,JTs,T9s,AKo,AQo,AJo,KQo',
 }
-const BB_CALL_DEFAULT = BB_CALL.CO
+export const BB_CALL_DEFAULT = BB_CALL.CO
 
 // SB calling range vs BTN
-const SB_CALL_BTN = 'AA,KK,QQ,JJ,TT,99,88,77,AKs,AQs,AJs,ATs,A9s,A8s,KQs,KJs,KTs,QJs,JTs,T9s,AKo,AQo,AJo,KQo'
+export const SB_CALL_BTN = 'AA,KK,QQ,JJ,TT,99,88,77,AKs,AQs,AJs,ATs,A9s,A8s,KQs,KJs,KTs,QJs,JTs,T9s,AKo,AQo,AJo,KQo'
 
 // 3-bet ranges (value + bluffs, polarised)
-const THREE_BET_IP  = 'AA,KK,QQ,JJ:0.5,AKs,AQs:0.5,A5s,A4s,KQs:0.5,AKo,AQo:0.3'
-const THREE_BET_OOP = 'AA,KK,QQ,JJ:0.5,AKs,AKo,A5s:0.5,A4s:0.5'
+export const THREE_BET_IP  = 'AA,KK,QQ,JJ:0.5,AKs,AQs:0.5,A5s,A4s,KQs:0.5,AKo,AQo:0.3'
+export const THREE_BET_OOP = 'AA,KK,QQ,JJ:0.5,AKs,AKo,A5s:0.5,A4s:0.5'
 
 // Calling a 3-bet
 export const CALL_3BET_IP  = 'QQ:0.5,JJ,TT,99,AKs,AQs,AJs,KQs,AKo,AQo'
 export const CALL_3BET_OOP = 'JJ,TT,AKs,AKo'
 
 // 4-bet range (villain responds to hero's 3-bet with a 4-bet)
-const FOUR_BET_RANGE = 'AA,KK,QQ:0.4,AKs:0.4,AKo:0.3,A5s:0.3,A4s:0.3'
+export const FOUR_BET_RANGE = 'AA,KK,QQ:0.4,AKs:0.4,AKo:0.3,A5s:0.3,A4s:0.3'
 
 // ── Public interface ─────────────────────────────────────────────────────────
 
@@ -156,57 +154,6 @@ export interface RangePair {
   ipRange:  string
 }
 
-/**
- * Derive OOP and IP ranges for the postflop solver.
- * heroIsPFR = true  → hero made the last preflop raise (opened or 3-bet).
- * heroIsPFR = false → hero called a raise (villain was the last aggressor).
- * preflopContext is still used only for 3-bet pot detection (reliable keyword match).
- */
-export function getRangesForSpot(
-  heroPosition: string,
-  villainPositions: string[],
-  heroIsIP: boolean,
-  heroIsPFR: boolean,
-  preflopContext: string,
-  heroHand?: string,
-): RangePair {
-  const villain = villainPositions[0] ?? 'BB'
-  const ctx = preflopContext.toLowerCase()
-  const is3bet = ctx.includes('3-bet') || ctx.includes('3bet') || ctx.includes('re-raise')
-
-  let heroRange: string
-  let villainRange: string
-
-  if (is3bet && heroIsPFR) {
-    // Hero 3-bet; villain called
-    heroRange    = heroIsIP ? THREE_BET_IP  : THREE_BET_OOP
-    villainRange = heroIsIP ? CALL_3BET_OOP : CALL_3BET_IP
-  } else if (is3bet && !heroIsPFR) {
-    // Villain 3-bet; hero called
-    villainRange = heroIsIP ? THREE_BET_OOP : THREE_BET_IP
-    heroRange    = heroIsIP ? CALL_3BET_IP  : CALL_3BET_OOP
-  } else if (heroIsPFR) {
-    // Single-raised pot; hero opened
-    heroRange    = OPEN_RANGES[heroPosition] ?? OPEN_RANGES.CO
-    villainRange = villain === 'BB'
-      ? (BB_CALL[heroPosition] ?? BB_CALL_DEFAULT)
-      : villain === 'SB' ? SB_CALL_BTN : BB_CALL_DEFAULT
-  } else {
-    // Single-raised pot; villain opened, hero called
-    villainRange = OPEN_RANGES[villain] ?? OPEN_RANGES.CO
-    heroRange    = heroPosition === 'BB'
-      ? (BB_CALL[villain] ?? BB_CALL_DEFAULT)
-      : heroPosition === 'SB' ? SB_CALL_BTN : BB_CALL_DEFAULT
-  }
-
-  if (heroHand) heroRange = withHandInRange(heroRange, heroHand)
-
-  // Assign hero/villain ranges to the OOP and IP solver slots.
-  return heroIsIP
-    ? { oopRange: villainRange, ipRange: heroRange }
-    : { oopRange: heroRange,   ipRange: villainRange }
-}
-
 export const POSTFLOP_ORDER = ['SB', 'BB', 'UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN']
 
 // Position is relative: a seat is IP only if it acts after every opponent postflop.
@@ -215,107 +162,134 @@ export function isHeroInPosition(heroPosition: string, villainPositions: string[
   return villainPositions.every(v => POSTFLOP_ORDER.indexOf(v) < heroIdx)
 }
 
-/**
- * Determine villain's preflop action using GTO range tables.
- * heroIsPFR=true  → hero opened; villain is defending (call/3-bet/fold).
- * heroIsPFR=false → villain opened; hero 3-bet; villain responds (call/4-bet/fold).
- */
-/** 3-bet/call frequencies for a villain facing hero's preflop action — lets the
- *  server predict the postflop spot (and pre-solve it) when the decision is certain. */
-export function getVillainPreflopFrequencies(
-  actingPosition: string,
-  hand: string,
-  heroPosition: string,
-  heroIsPFR: boolean,
-): { aggrFreq: number; callFreq: number } {
-  const heroPostIdx  = POSTFLOP_ORDER.indexOf(heroPosition)
-  const villPostIdx  = POSTFLOP_ORDER.indexOf(actingPosition)
-  const villainIsOOP = villPostIdx !== -1 && heroPostIdx !== -1 && villPostIdx < heroPostIdx
-  let callRng = '', aggrRng = ''
-  if (heroIsPFR) {
-    if (actingPosition === 'BB')      { callRng = BB_CALL[heroPosition] ?? BB_CALL_DEFAULT; aggrRng = THREE_BET_OOP }
-    else if (actingPosition === 'SB') { callRng = SB_CALL_BTN; aggrRng = THREE_BET_OOP }
-    else { callRng = BB_CALL[heroPosition] ?? BB_CALL_DEFAULT; aggrRng = villainIsOOP ? THREE_BET_OOP : THREE_BET_IP }
-  } else {
-    callRng = villainIsOOP ? CALL_3BET_OOP : CALL_3BET_IP
-    aggrRng = FOUR_BET_RANGE
-  }
-  return { aggrFreq: freqInRange(hand, aggrRng), callFreq: freqInRange(hand, callRng) }
+const actsAfter = (a: string, b: string) => POSTFLOP_ORDER.indexOf(a) > POSTFLOP_ORDER.indexOf(b)
+
+/** Flatting range against a single open. */
+function callRangeVsOpen(callerPos: string, openerPos: string): string {
+  return callerPos === 'SB' ? SB_CALL_BTN : (BB_CALL[openerPos] ?? BB_CALL_DEFAULT)
 }
 
-export function getVillainPreflopDecision(
-  actingPosition: string,
-  hand: string,
-  heroPosition: string,
-  heroIsPFR: boolean,
-  heroActionSize: number,
-  pot: number,
-  effectiveStack: number,
-): VillainResponse {
-  const heroPostIdx  = POSTFLOP_ORDER.indexOf(heroPosition)
-  const villPostIdx  = POSTFLOP_ORDER.indexOf(actingPosition)
-  const villainIsOOP = villPostIdx !== -1 && heroPostIdx !== -1 && villPostIdx < heroPostIdx
+// Calling a 4-bet / continuing against a jam
+export const CALL_4BET = 'QQ,JJ,AKs,AKo'
+const CALL_JAM_WIDE  = 'AA,KK,QQ,JJ,TT,AKs,AKo,AQs'
+const CALL_JAM_TIGHT = 'AA,KK,QQ,AKs,AKo'
 
-  let callRng = ''
-  let aggrRng = ''
+/** How preflop ended: single-raised, 3-bet or 4-bet(+) pot. */
+export type PotType = 'srp' | '3bet' | '4bet'
 
-  if (heroIsPFR) {
-    if (actingPosition === 'BB') {
-      callRng = BB_CALL[heroPosition] ?? BB_CALL_DEFAULT
-      aggrRng = THREE_BET_OOP
-    } else if (actingPosition === 'SB') {
-      callRng = SB_CALL_BTN
-      aggrRng = THREE_BET_OOP
-    } else {
-      callRng = BB_CALL[heroPosition] ?? BB_CALL_DEFAULT
-      aggrRng = villainIsOOP ? THREE_BET_OOP : THREE_BET_IP
-    }
+/**
+ * OOP and IP ranges for a heads-up postflop spot, from how preflop ended.
+ * Both players' actual hands are added to their range when the tables don't
+ * contain them, so the solver can always answer for the hand that was played.
+ */
+export function getRangesForSpot(o: {
+  heroPosition: string
+  villainPosition: string
+  heroIsIP: boolean
+  heroIsAggressor: boolean   // hero made the last preflop raise
+  potType: PotType
+  heroHand?: string
+  villainHand?: string
+}): RangePair {
+  const aggrPos   = o.heroIsAggressor ? o.heroPosition : o.villainPosition
+  const callerPos = o.heroIsAggressor ? o.villainPosition : o.heroPosition
+  const aggrIsIP  = o.heroIsAggressor ? o.heroIsIP : !o.heroIsIP
+
+  let aggrRange: string
+  let callRange: string
+  if (o.potType === '4bet') {
+    aggrRange = FOUR_BET_RANGE
+    callRange = CALL_4BET
+  } else if (o.potType === '3bet') {
+    aggrRange = aggrIsIP ? THREE_BET_IP : THREE_BET_OOP
+    callRange = aggrIsIP ? CALL_3BET_OOP : CALL_3BET_IP
   } else {
-    // Villain opened, hero 3-bet, villain now responds
-    callRng = villainIsOOP ? CALL_3BET_OOP : CALL_3BET_IP
-    aggrRng = FOUR_BET_RANGE
+    aggrRange = OPEN_RANGES[aggrPos] ?? OPEN_RANGES.CO
+    callRange = callRangeVsOpen(callerPos, aggrPos)
   }
 
-  const aggrFreq = freqInRange(hand, aggrRng)
-  const callFreq = freqInRange(hand, callRng)
-  const postedBlind = actingPosition === 'BB' ? 1.0 : actingPosition === 'SB' ? 0.5 : 0
+  let heroRange    = o.heroIsAggressor ? aggrRange : callRange
+  let villainRange = o.heroIsAggressor ? callRange : aggrRange
+  if (o.heroHand)    heroRange    = withHandInRange(heroRange, o.heroHand)
+  if (o.villainHand) villainRange = withHandInRange(villainRange, o.villainHand)
 
-  if (aggrFreq > 0 && Math.random() < aggrFreq) {
-    const mult   = villainIsOOP ? 3.5 : 3.0
-    const raiseAmt = Math.round(heroActionSize * mult * 10) / 10
-    const addedByVillain = Math.max(0, raiseAmt - postedBlind)
-    const newPot = pot + heroActionSize + addedByVillain
+  return o.heroIsIP
+    ? { oopRange: villainRange, ipRange: heroRange }
+    : { oopRange: heroRange,   ipRange: villainRange }
+}
+
+// ── Villain preflop play ─────────────────────────────────────────────────────
+
+export interface VillainPreflopSpot {
+  pos: string
+  hand: string
+  raises: number                // raises so far: 0 unopened/limped, 1 open, 2 three-bet, ...
+  aggressorPos: string | null   // who made the last raise
+  raisedBefore: boolean         // this villain made an earlier raise (opener facing a 3-bet, ...)
+  currentBet: number            // total to match
+  myIn: number                  // chips this villain already has in
+  stackTotal: number            // myIn + chips behind
+}
+
+/** The raise and continue ranges a villain uses in a preflop spot. */
+function villainPreflopRanges(s: VillainPreflopSpot): { aggr: string; call: string } {
+  const isOOP = s.aggressorPos ? !actsAfter(s.pos, s.aggressorPos) : true
+
+  // Facing a bet that commits a big part of the stack: continue with premiums only.
+  if (s.currentBet >= 0.4 * s.stackTotal) {
+    return { aggr: '', call: s.raises <= 2 ? CALL_JAM_WIDE : CALL_JAM_TIGHT }
+  }
+  if (s.raises === 0) {
+    // Limped to this seat: raise the top of the range, otherwise see a cheap flop.
+    return { aggr: THREE_BET_OOP, call: BB_CALL.BTN }
+  }
+  if (s.raises === 1) {
+    return { aggr: isOOP ? THREE_BET_OOP : THREE_BET_IP, call: callRangeVsOpen(s.pos, s.aggressorPos ?? 'CO') }
+  }
+  if (s.raises === 2) {
+    return s.raisedBefore
+      ? { aggr: FOUR_BET_RANGE, call: isOOP ? CALL_3BET_OOP : CALL_3BET_IP }   // opener facing a 3-bet
+      : { aggr: 'AA,KK', call: 'QQ,AKs' }                                      // cold, behind an open and a 3-bet
+  }
+  if (s.raises === 3) {
+    return s.raisedBefore ? { aggr: 'AA,KK', call: CALL_4BET } : { aggr: 'AA,KK', call: '' }
+  }
+  return { aggr: '', call: CALL_JAM_TIGHT }
+}
+
+/** Raise / continue frequencies: lets the server predict the flop (and pre-solve it). */
+export function villainPreflopFreqs(s: VillainPreflopSpot): { aggrFreq: number; callFreq: number } {
+  const { aggr, call } = villainPreflopRanges(s)
+  return { aggrFreq: freqInRange(s.hand, aggr), callFreq: freqInRange(s.hand, call) }
+}
+
+const RAISE_NAMES = ['raises', '3-bets', '4-bets', '5-bets']
+
+/** A villain's preflop action from the range tables. `amount` is the total raised or called to. */
+export function villainPreflopAction(
+  s: VillainPreflopSpot,
+  rand: () => number = Math.random,
+): { action: 'fold' | 'check' | 'call' | 'raise'; amount?: number; description: string } {
+  const { aggrFreq, callFreq } = villainPreflopFreqs(s)
+  const half = (n: number) => Math.round(n * 2) / 2
+
+  if (aggrFreq > 0 && rand() < aggrFreq && s.stackTotal > s.currentBet) {
+    const isOOP = s.aggressorPos ? !actsAfter(s.pos, s.aggressorPos) : true
+    let to = s.raises === 0 ? 4
+      : s.raises === 1 ? half(s.currentBet * (isOOP ? 3.5 : 3))
+      : s.raises === 2 ? half(s.currentBet * 2.3)
+      : s.stackTotal
+    if (to >= 0.45 * s.stackTotal) to = s.stackTotal
+    const verb = RAISE_NAMES[Math.min(s.raises, RAISE_NAMES.length - 1)]
     return {
-      action: 'raise',
-      amount: raiseAmt,
-      description: `${actingPosition} ${heroIsPFR ? '3-bets' : '4-bets'} to ${raiseAmt}bb`,
-      potOdds: `${Math.round(newPot / raiseAmt * 10) / 10}:1`,
-      newPot,
-      newStack: Math.max(0, effectiveStack - addedByVillain),
-      isHandOver: false,
+      action: 'raise', amount: to,
+      description: to >= s.stackTotal ? `${s.pos} moves all-in for ${to}bb` : `${s.pos} ${verb} to ${to}bb`,
     }
   }
-
+  if (s.currentBet <= s.myIn) return { action: 'check', description: `${s.pos} checks` }
   if (callFreq > 0) {
-    const callAdd = Math.max(0, heroActionSize - postedBlind)
-    const newPot  = pot + heroActionSize + callAdd
-    return {
-      action: 'call',
-      amount: heroActionSize,
-      description: `${actingPosition} calls ${heroActionSize}bb`,
-      potOdds: null,
-      newPot,
-      newStack: Math.max(0, effectiveStack - callAdd),
-      isHandOver: false,
-    }
+    const to = Math.min(s.currentBet, s.stackTotal)
+    return { action: 'call', amount: to, description: `${s.pos} calls ${to}bb` }
   }
-
-  return {
-    action: 'fold',
-    description: `${actingPosition} folds`,
-    potOdds: null,
-    newPot: pot,
-    newStack: effectiveStack,
-    isHandOver: true,
-  }
+  return { action: 'fold', description: `${s.pos} folds` }
 }

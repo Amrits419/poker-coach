@@ -15,7 +15,8 @@ export interface HandHistoryEntry {
   street: string
   actor: 'hero' | 'villain'
   action: string
-  amount?: number
+  amount?: number      // bet/raise: total in front on that street; call: total called to
+  villainIdx?: number  // which villain acted (index into StartState.villainPositions)
 }
 
 export interface StartState {
@@ -26,20 +27,10 @@ export interface StartState {
   heroIsIP: boolean
   heroIsPFR: boolean           // true = hero made the last preflop raise; false = hero called
   preflopContext: string
-  pot: number
-  effectiveStack: number
+  pot: number                  // everything on the table when hero first acts, blinds included
+  effectiveStack: number       // hero's chips behind at that point
   preflopRaiseAmount: number | null  // villain's open size when heroIsPFR=false, else null
   preflopBets: Record<string, number> // chips each position has in front of them when hero first acts (blinds, open, 3-bet)
-}
-
-export interface VillainResponse {
-  action: string
-  amount?: number
-  description: string
-  potOdds: string | null
-  newPot: number
-  newStack: number
-  isHandOver: boolean
 }
 
 export interface Analysis {
@@ -54,4 +45,35 @@ export interface Analysis {
   leaks: string[]
   score: number
   studyPlan: string[]
+  result?: HandResult   // trainer hands only: who won and what it was worth
+}
+
+/** What the client needs to draw the table and offer hero the legal actions. */
+export interface TableState {
+  street: string
+  pot: number
+  heroStack: number
+  heroIn: number                 // hero's chips in front on this street
+  bets: Record<string, number>   // chips in front of each position on this street
+  folded: number[]               // villain indices that have folded
+  toAct: 'hero' | number | null  // number = villain index
+  toCall: number                 // total hero must match; 0 = hero can check
+  callCost: number               // chips a call adds
+  canRaise: boolean
+  minRaise: number               // smallest legal bet / raise-to
+  maxRaise: number               // all-in
+  potOdds: string | null
+  preflopRaises: number          // 0 unopened, 1 open, 2 three-bet, ...
+  handOver: boolean
+  allInRunout: boolean
+}
+
+export interface HandResult {
+  outcome: 'won' | 'lost' | 'split'
+  how: 'fold' | 'showdown'
+  netBb: number
+  pot: number
+  heroHand?: string
+  villainHand?: string
+  villainPosition?: string
 }

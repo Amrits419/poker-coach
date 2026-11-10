@@ -1,7 +1,8 @@
 import OpenAI from 'openai'
-import { getRangesForSpot, POSTFLOP_ORDER } from './ranges'
+import { getRangesForSpot, isHeroInPosition, type PotType } from './ranges'
+import { legalize, optionsFor, heroHasInitiative, type HandState } from './engine'
 import { solverBetSizes } from './types'
-import type { Setup, StartState, HandHistoryEntry, VillainResponse } from './types'
+import type { Setup, StartState, HandHistoryEntry } from './types'
 
 const SOLVER_URL = process.env.SOLVER_URL ?? 'http://127.0.0.1:3002'
 
@@ -20,7 +21,7 @@ const LLM_MODEL = process.env.LLM_MODEL ?? 'openai/gpt-oss-120b'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-interface ActionFreq {
+export interface ActionFreq {
   action: string
   amount?: number
   frequency: number
@@ -97,32 +98,36 @@ export async function callSolver(params: {
 
 // ── LLM explanation of a GTO action ─────────────────────────────────────────
 
-async function explainVillainAction(
-  solver: SolverResult,
-  villainPosition: string,
-  heroPosition: string,
-  board: string[],
-  street: string,
-  pot: number,
+/** Everything the explanation needs. Sent to the client with the villain's action
+ *  so the (slow) LLM call can run in the background instead of delaying the hand. */
+export interface ExplainContext {
+  villainPosition: string
   villainIsIP: boolean
-): Promise<string> {
-  const freqSummary = solver.actionFrequencies
+  board: string[]
+  street: string
+  pot: number
+  action: string
+  amount?: number
+  frequencies: ActionFreq[]
+  equity: number
+  ev: number
+}
+
+export async function explainVillainAction(c: ExplainContext): Promise<string> {
+  const freqSummary = c.frequencies
     .filter(a => a.frequency > 0.01)
     .map(a => `${a.action}${a.amount ? ` ${a.amount}bb` : ''} ${(a.frequency * 100).toFixed(0)}%`)
     .join(', ')
 
-  const action = solver.sampledAction
-  const amount = solver.sampledAmount
-
   const prompt = `You are a concise poker coach. Explain villain's GTO action in 1-2 sentences.
 
 Situation:
-- ${street}, board: ${board.join(' ')}, pot: ${pot}bb
-- Villain (${villainPosition}) is ${villainIsIP ? 'IP' : 'OOP'}
-- Villain equity: ${(solver.equity * 100).toFixed(0)}%, EV: ${solver.ev.toFixed(1)}bb
+- ${c.street}, board: ${c.board.join(' ')}, pot: ${c.pot}bb
+- Villain (${c.villainPosition}) is ${c.villainIsIP ? 'IP' : 'OOP'}
+- Villain equity: ${(c.equity * 100).toFixed(0)}%, EV: ${c.ev.toFixed(1)}bb
 
 GTO frequencies: ${freqSummary}
-Villain chose: ${action}${amount ? ` ${amount}bb` : ''}
+Villain chose: ${c.action}${c.amount ? ` ${c.amount}bb` : ''}
 
 Rules:
 - Do NOT mention villain's hole cards
@@ -139,166 +144,137 @@ Rules:
     reasoning_effort: 'low',
   })
 
-  return res.choices[0].message.content?.trim() ?? `${villainPosition} ${action}s`
+  return res.choices[0].message.content?.trim() || plainDescription(c.villainPosition, c.action, c.amount)
 }
 
-// ── Board helpers ─────────────────────────────────────────────────────────────
+export function plainDescription(pos: string, action: string, amount?: number): string {
+  if (action === 'bet') return `${pos} bets ${amount}bb`
+  if (action === 'raise') return `${pos} raises to ${amount}bb`
+  if (action === 'call') return `${pos} calls`
+  return `${pos} ${action}s`
+}
 
-export function boardForStreet(
-  street: string,
-  board: StartState['board']
-): string[] {
+// ── The solver spot for a street ─────────────────────────────────────────────
+// The solver's tree is rooted at the start of a street and replays that street's
+// actions itself, so it is always given the pot and stack as they were when the
+// street began. Every caller — villain action, pre-solve, post-hand grading —
+// builds its request here from the engine's replay, so they all produce the same
+// cache key for a spot and the flop is only ever solved once.
+
+export interface SolverSpot {
+  board: string[]
+  oopRange: string
+  ipRange: string
+  pot: number
+  effectiveStack: number
+  street: string
+  betSizes?: string
+  heroIsIP: boolean
+  villainIdx: number
+}
+
+export function boardForStreet(street: string, board: StartState['board']): string[] {
   if (street === 'Flop')  return board.flop
   if (street === 'Turn')  return [...board.flop, board.turn]
   return [...board.flop, board.turn, board.river]
 }
 
-// Actions on the current street only, before a given index
-function streetHistoryBefore(
-  fullHistory: HandHistoryEntry[],
-  street: string,
-  beforeIndex: number
-): { action: string; amount?: number }[] {
-  return fullHistory
-    .slice(0, beforeIndex)
-    .filter(h => h.street === street)
-    .map(h => ({ action: h.action, amount: h.amount }))
-}
+/**
+ * Null when the street has no solver spot: it was not reached, it was not heads-up
+ * (the solver is two-player), or the pot was limped. A limped pot is 40+ stacks
+ * deep with two very wide ranges — a tree that takes over a minute to solve — so
+ * those hands are played and coached without the solver.
+ */
+export function solverSpot(setup: Setup, startState: StartState, state: HandState, street: string): SolverSpot | null {
+  const start = state.streetStart[street as keyof HandState['streetStart']]
+  if (!start || start.villains.length !== 1 || start.stack <= 0) return null
+  const villainIdx = start.villains[0]
+  const villainPosition = startState.villainPositions[villainIdx]
+  const heroIsIP = isHeroInPosition(setup.position, [villainPosition])
 
-// ── Street-start pot and stack ───────────────────────────────────────────────
-// The solver's tree is rooted at the start of the street and replays the street's
-// actions itself, so it must be given the pot and stack as they were when the
-// street began — never the mid-street pot the client is displaying. Replaying the
-// hand history here (with the same arithmetic as HandTrainer / routes/trainer.ts
-// calcPot) makes every caller — villain action, pre-solve, post-hand grading —
-// produce the identical (pot, stack) for a spot, which is what the solver's cache
-// is keyed on.
+  const raises = state.raisers.length
+  if (raises === 0) return null
+  const potType: PotType = raises === 1 ? 'srp' : raises === 2 ? '3bet' : '4bet'
+  const { oopRange, ipRange } = getRangesForSpot({
+    heroPosition: setup.position,
+    villainPosition,
+    heroIsIP,
+    heroIsAggressor: state.raisers[raises - 1] === 'hero',
+    potType,
+    heroHand: startState.holeCards,
+    villainHand: startState.villainHoleCards[villainIdx],
+  })
 
-export function streetStartPotStack(
-  history: HandHistoryEntry[],
-  street: string,
-  startState: StartState,
-  heroPosition: string,
-): { pot: number; stack: number } {
-  const r1 = (n: number) => Math.round(n * 10) / 10
-  const postedBlind = heroPosition === 'BB' ? 1.0 : heroPosition === 'SB' ? 0.5 : 0
-  let pot = startState.pot
-  let stack = startState.effectiveStack
-  let lastHeroBet = 0           // hero's last bet/raise on the street being replayed
-  let villainActed = false      // has a villain acted on the street being replayed
-  let curStreet = ''
-  for (const h of history) {
-    if (h.street === street) break
-    if (h.street !== curStreet) { curStreet = h.street; lastHeroBet = 0; villainActed = false }
-    const amt = h.amount ?? 0
-    if (h.actor === 'hero') {
-      if (h.action === 'bet' || h.action === 'raise') { pot = r1(pot + amt); stack = r1(stack - amt); lastHeroBet = amt }
-      else if (h.action === 'call') {
-        pot = r1(pot + amt)
-        stack = r1(stack - (h.street === 'Preflop' ? Math.max(0, amt - postedBlind) : amt))
-      }
-    } else {
-      if (h.action === 'bet' || h.action === 'raise') pot = r1(pot + amt)
-      else if (h.action === 'call') {
-        const bbAlreadyIn = h.street === 'Preflop' && !villainActed ? 1 : 0
-        pot = r1(pot + Math.max(0, lastHeroBet - bbAlreadyIn))
-      }
-      villainActed = true
-    }
+  return {
+    board: boardForStreet(street, startState.board),
+    oopRange, ipRange,
+    pot: start.pot,
+    effectiveStack: start.stack,
+    street,
+    betSizes: solverBetSizes(setup),
+    heroIsIP,
+    villainIdx,
   }
-  return { pot, stack: Math.max(0, stack) }
 }
 
-// ── Public: get villain postflop action ───────────────────────────────────────
+const streetActions = (history: HandHistoryEntry[], street: string) =>
+  history.filter(h => h.street === street).map(h => ({ action: h.action, amount: h.amount }))
 
+// ── Villain's postflop action ────────────────────────────────────────────────
+
+export interface VillainDecision {
+  action: string
+  amount?: number
+  description: string
+  explain?: ExplainContext   // present when the solver chose the action
+}
+
+/** Throws when the spot can't be solved (multiway, solver down): the caller falls back to the LLM. */
 export async function getVillainActionFromSolver(
   setup: Setup,
   startState: StartState,
   history: HandHistoryEntry[],
-  currentStreet: string,
-  pot: number,
-  effectiveStack: number,
-  villainIndex: number = 0
-): Promise<VillainResponse> {
-  const { oopRange, ipRange } = getRangesForSpot(
-    setup.position,
-    startState.villainPositions,
-    startState.heroIsIP,
-    startState.heroIsPFR,
-    startState.preflopContext,
-    startState.holeCards,
-  )
+  state: HandState,
+  villainIdx: number,
+): Promise<VillainDecision> {
+  const spot = solverSpot(setup, startState, state, state.street)
+  if (!spot || spot.villainIdx !== villainIdx) throw new Error('not a heads-up solver spot')
 
-  const board = boardForStreet(currentStreet, startState.board)
-
-  // All actions this street up to now (hero just acted — that's the last entry)
-  const streetHist = history
-    .filter(h => h.street === currentStreet)
-    .map(h => ({ action: h.action, amount: h.amount }))
-
-  const villainHand = startState.villainHoleCards[villainIndex] ?? startState.villainHoleCards[0]
-
-  // Determine villain's IP/OOP status from their actual postflop position,
-  // not just as the inverse of heroIsIP (which breaks in multiway).
-  const heroPostflopIdx    = POSTFLOP_ORDER.indexOf(setup.position)
-  const villainPos         = startState.villainPositions[villainIndex] ?? startState.villainPositions[0]
-  const villainPostflopIdx = POSTFLOP_ORDER.indexOf(villainPos)
-  const villainIsIP        = villainPostflopIdx > heroPostflopIdx
-
-  const streetStart = streetStartPotStack(history, currentStreet, startState, setup.position)
+  const villainIsIP = !spot.heroIsIP
+  const streetHist = streetActions(history, state.street)
   const raw = await callSolver({
-    board,
-    oopRange,
-    ipRange,
-    pot: streetStart.pot,
-    effectiveStack: streetStart.stack,
-    street: currentStreet,
+    ...spot,
     streetHistory: streetHist,
-    actingPlayerHand: villainHand,
+    actingPlayerHand: startState.villainHoleCards[villainIdx],
     actingPlayerIsIP: villainIsIP,
-    betSizes: solverBetSizes(setup),
   })
 
-  // House rule: an out-of-position villain never leads (donk-bets). First to act
-  // it checks; it can still check-raise once hero bets. In-position villains
-  // bet when checked to or raise when they have it, per the solver.
-  const facingBet = streetHist.some(h => h.action === 'bet' || h.action === 'raise')
-  const solver: SolverResult = (!villainIsIP && !facingBet && raw.sampledAction === 'bet')
-    ? { ...raw, sampledAction: 'check', sampledAmount: undefined }
-    : raw
+  let action = raw.sampledAction
+  let amount = raw.sampledAmount
+  const o = optionsFor(state, villainIdx)
 
-  const explanation = await explainVillainAction(
-    solver,
-    startState.villainPositions[villainIndex] ?? startState.villainPositions[0],
-    setup.position,
-    board,
-    currentStreet,
-    pot,
-    villainIsIP
-  )
+  // House rule: an out-of-position villain never donk-bets into hero's initiative
+  // (hero raised last preflop, or bet the street before). It checks, and can still
+  // check-raise. When the villain has the initiative itself it bets as the solver says.
+  if (!villainIsIP && o.toCall === 0 && action !== 'check' && heroHasInitiative(state, history)) { action = 'check'; amount = undefined }
 
-  // Recompute pot/stack from the sampled action
-  const newPot = calcNewPot(pot, solver.sampledAction, solver.sampledAmount, history, currentStreet)
-  const newStack = Math.max(0, Math.round((effectiveStack - (solver.sampledAmount ?? 0)) * 10) / 10)
-
-  const isHandOver = solver.sampledAction === 'fold'
-
-  // pot odds hero will face if villain bet/raised
-  let potOdds: string | null = null
-  if (solver.sampledAction === 'bet' || solver.sampledAction === 'raise') {
-    const villainBet = solver.sampledAmount ?? 0
-    const ratio = ((newPot - villainBet) / villainBet).toFixed(1)
-    potOdds = `${ratio}:1`
+  // The tree has one bet size, so hero's real bet can be bigger than the bet the
+  // solver thinks it is raising. Keep the raise a real raise over hero's bet.
+  if (action === 'raise' && o.toCall > 0 && (amount ?? 0) < o.minRaise) {
+    amount = Math.round(o.toCall * 2.5 * 10) / 10
   }
+  const legal = legalize(state, villainIdx, action, amount)
+  const villainPosition = startState.villainPositions[villainIdx]
 
   return {
-    action:      solver.sampledAction,
-    amount:      solver.sampledAmount,
-    description: explanation,
-    potOdds,
-    newPot,
-    newStack,
-    isHandOver,
+    ...legal,
+    description: plainDescription(villainPosition, legal.action, legal.amount),
+    explain: {
+      villainPosition, villainIsIP,
+      board: spot.board, street: state.street, pot: state.pot,
+      action: legal.action, amount: legal.amount,
+      frequencies: raw.actionFrequencies, equity: raw.equity, ev: raw.ev,
+    },
   }
 }
 
@@ -307,23 +283,21 @@ export async function getVillainActionFromSolver(
 // client asks for this exact spot while the pre-solve is running it just waits
 // for the same job instead of starting a second one.
 
-export function presolveFlop(setup: Setup, startState: StartState, pot: number, effectiveStack: number): void {
-  if (!startState.board?.flop?.length) return
-  const { oopRange, ipRange } = getRangesForSpot(
-    setup.position, startState.villainPositions, startState.heroIsIP, startState.heroIsPFR, startState.preflopContext, startState.holeCards,
-  )
+export function presolveFlop(setup: Setup, startState: StartState, state: HandState): void {
+  const spot = solverSpot(setup, startState, state, 'Flop')
+  if (!spot) return
   fetch(`${SOLVER_URL}/presolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(5000),
     body: JSON.stringify({
-      board: startState.board.flop, oop_range: oopRange, ip_range: ipRange,
-      pot, effective_stack: effectiveStack, street: 'Flop', bet_sizes: solverBetSizes(setup) ?? null,
+      board: spot.board, oop_range: spot.oopRange, ip_range: spot.ipRange,
+      pot: spot.pot, effective_stack: spot.effectiveStack, street: 'Flop', bet_sizes: spot.betSizes ?? null,
     }),
   }).catch(err => console.warn('presolve failed (non-fatal):', err?.message ?? err))
 }
 
-// ── Public: solver eval for a single hero decision ────────────────────────────
+// ── Solver eval for a single hero decision ───────────────────────────────────
 
 export interface HeroEval {
   street: string
@@ -334,39 +308,25 @@ export interface HeroEval {
   heroEv: number
 }
 
+/** Null when the decision's street was not a heads-up solver spot. */
 export async function evalHeroDecision(
   setup: Setup,
   startState: StartState,
-  fullHistory: HandHistoryEntry[],
-  decision: HandHistoryEntry,
+  history: HandHistoryEntry[],
+  state: HandState,
   decisionIndex: number,
-): Promise<HeroEval> {
-  const { oopRange, ipRange } = getRangesForSpot(
-    setup.position,
-    startState.villainPositions,
-    startState.heroIsIP,
-    startState.heroIsPFR,
-    startState.preflopContext,
-    startState.holeCards,
-  )
+): Promise<HeroEval | null> {
+  const decision = history[decisionIndex]
+  const spot = solverSpot(setup, startState, state, decision.street)
+  if (!spot) return null
 
-  const board = boardForStreet(decision.street, startState.board)
-  const streetHist = streetHistoryBefore(fullHistory, decision.street, decisionIndex)
-  const { pot, stack } = streetStartPotStack(fullHistory, decision.street, startState, setup.position)
-
+  // In play this spot is already solved and cached (the villain acted on it), so
+  // grading it is a millisecond lookup.
   const solver = await callSolver({
-    board,
-    oopRange,
-    ipRange,
-    pot,
-    effectiveStack: stack,
-    street: decision.street,
-    streetHistory: streetHist,
+    ...spot,
+    streetHistory: streetActions(history.slice(0, decisionIndex), decision.street),
     actingPlayerHand: startState.holeCards,
-    actingPlayerIsIP: startState.heroIsIP,
-    betSizes: solverBetSizes(setup),
-    // No iteration cap: in play this spot is already solved and cached (the villain
-    // acted on it), and a cold 20-iteration solve costs as much as a converged one.
+    actingPlayerIsIP: spot.heroIsIP,
   })
 
   return {
@@ -377,21 +337,4 @@ export async function evalHeroDecision(
     heroEquity:     solver.equity,
     heroEv:         solver.ev,
   }
-}
-
-// ── Pot math helper (mirrors server/routes/trainer.ts calcPot) ────────────────
-
-export function calcNewPot(
-  pot: number,
-  action: string,
-  amount: number | undefined,
-  history: HandHistoryEntry[],
-  street: string
-): number {
-  if (action === 'fold' || action === 'check') return pot
-  if (action === 'call') {
-    const lastVillainBet = [...history].reverse().find(h => h.actor === 'hero' && h.street === street)
-    return Math.round((pot + (lastVillainBet?.amount ?? 0)) * 10) / 10
-  }
-  return Math.round((pot + (amount ?? 0)) * 10) / 10
 }

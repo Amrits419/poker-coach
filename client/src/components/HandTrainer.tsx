@@ -1,12 +1,12 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
-import type { Setup, StartState, HandHistoryEntry, Analysis, VillainResponse } from '../api'
-import { villainAct, analyzeHand } from '../api'
+import { useState, useEffect, useRef } from 'react'
+import type { Setup, StartState, HandHistoryEntry, Analysis, TableState } from '../api'
+import { villainAct, analyzeHand, getTable, explainVillain } from '../api'
 import { Card, CardBack, FlipCard, EmptySlot, ActionTag } from './Card'
 import { parseCards } from '../lib/cards'
+import { bb } from '../lib/format'
 
 const STREETS = ['Preflop', 'Flop', 'Turn', 'River'] as const
 const ALL_POSITIONS = ['UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN', 'SB', 'BB']
-const POSTFLOP_ORDER = ['SB', 'BB', 'UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN']
 const PREFLOP_ORDER = ['UTG', 'UTG+1', 'MP', 'HJ', 'CO', 'BTN', 'SB', 'BB']
 
 // Seat centres as % of the table box; hero (seat 0) at the bottom, clockwise.
@@ -26,10 +26,23 @@ const chipPos = (s: { x: number; y: number }) => ({ x: lerp(s.x, 50, 0.42), y: l
 const dealerPos = (s: { x: number; y: number }) => ({ x: lerp(s.x, 50, 0.26) + (s.x === 50 ? (s.y > 50 ? -12 : 12) : s.x > 50 ? -7 : 7), y: lerp(s.y, 50, 0.26) })
 
 function getBoardForStreet(idx: number, b: StartState['board']): string[] {
-  if (idx === 0) return []
+  if (idx <= 0) return []
   if (idx === 1) return b.flop
   if (idx === 2) return [...b.flop, b.turn]
   return [...b.flop, b.turn, b.river]
+}
+
+const r2 = (n: number) => Math.round(n * 100) / 100
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+const RAISE_NAMES = ['Open', '3-bet', '4-bet', '5-bet']
+
+// A sensible size to pre-fill when hero's turn comes round (they can change it).
+function defaultBet(t: TableState, setup: Setup): string {
+  if (!t.canRaise) return ''
+  const size = t.toCall > 0
+    ? (t.street === 'Preflop' ? (t.preflopRaises === 0 ? 2.5 : t.toCall * 3) : t.toCall * 2.5)
+    : t.pot * (Number(setup.betSize ?? 75) / 100)
+  return bb(Math.min(Math.max(Math.round(size * 10) / 10, t.minRaise), t.maxRaise))
 }
 
 type DealPhase = 'dealing' | 'done' | 'ready'
@@ -41,62 +54,15 @@ interface Props {
   userId: string
   setup: Setup
   startState: StartState
+  initialTable: TableState
   onDone: (analysis: Analysis, villainDescriptions: VillainDesc[]) => void
 }
 
-// ── Sequential villain runner ─────────────────────────────────────────────────
+// The server owns the state of the hand. After every hero action the table is
+// re-read from it, and villains are asked to act one at a time until it is
+// hero's turn again or the hand is over; this component only draws the result.
 
-async function runVillainsSequential(
-  setup: Setup,
-  startState: StartState,
-  initHistory: HandHistoryEntry[],
-  initDescs: VillainDesc[],
-  street: string,
-  board: string[],
-  initPot: number,
-  initStack: number,
-  foldedVillains: Set<number>,
-  indicesToRun: number[],
-  onStep?: (villainIdx: number) => void,
-): Promise<{
-  history: HandHistoryEntry[]
-  descs: VillainDesc[]
-  pot: number
-  stack: number
-  foldedVillains: Set<number>
-  handOver: boolean
-  raisedResp: VillainResponse | null
-  raisedBy: number | null
-}> {
-  let hist = initHistory
-  let descs = initDescs
-  let pot = initPot
-  let stack = initStack
-  const folded = new Set(foldedVillains)
-
-  for (const vi of indicesToRun) {
-    if (folded.has(vi)) continue
-    onStep?.(vi)
-    const resp = await villainAct(setup, startState, hist, street, board, pot, stack, vi)
-    hist = [...hist, { street, actor: 'villain', action: resp.action, amount: resp.amount, villainIdx: vi }]
-    descs = [...descs, { street, description: resp.description }]
-    pot = resp.newPot
-    stack = resp.newStack
-
-    if (resp.action === 'fold' || resp.isHandOver) {
-      folded.add(vi)
-      if (folded.size >= startState.villainPositions.length)
-        return { history: hist, descs, pot, stack, foldedVillains: folded, handOver: true, raisedResp: null, raisedBy: null }
-    } else if (resp.action === 'bet' || resp.action === 'raise') {
-      return { history: hist, descs, pot, stack, foldedVillains: folded, handOver: false, raisedResp: resp, raisedBy: vi }
-    }
-  }
-  return { history: hist, descs, pot, stack, foldedVillains: folded, handOver: false, raisedResp: null, raisedBy: null }
-}
-
-// ── Component ─────────────────────────────────────────────────────────────────
-
-export default function HandTrainer({ userId, setup, startState, onDone }: Props) {
+export default function HandTrainer({ userId, setup, startState, initialTable, onDone }: Props) {
   const heroIdx = ALL_POSITIONS.indexOf(setup.position)
   const seatedPositions = heroIdx === -1
     ? ALL_POSITIONS
@@ -145,110 +111,83 @@ export default function HandTrainer({ userId, setup, startState, onDone }: Props
     }, flipDelay)
 
     return () => { timersRef.current.forEach(clearTimeout); timersRef.current = [] }
-  }, [])
+    // The deal animation runs once per hand (the component is keyed by hand).
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Game state ────────────────────────────────────────────────────────────
+  const [table, setTable] = useState<TableState>(initialTable)
   const [history, setHistory] = useState<HandHistoryEntry[]>([])
-  const [streetIndex, setStreetIndex] = useState(0)
-  const [pot, setPot] = useState(startState.pot)
-  const [effectiveStack, setEffectiveStack] = useState(startState.effectiveStack)
   const [gamePhase, setGamePhase] = useState<GamePhase>('hero_acts')
-  const [villainBet, setVillainBet] = useState<number | null>(null)
-  const [potOdds, setPotOdds] = useState<string | null>(null)
-  const [betAmount, setBetAmount] = useState('')
+  const [betAmount, setBetAmount] = useState(() => defaultBet(initialTable, setup))
   const [statusMsg, setStatusMsg] = useState('')
   const [thinkingVillain, setThinkingVillain] = useState<number | null>(null)
-  const [villainDescriptions, setVillainDescriptions] = useState<VillainDesc[]>([])
-  const [foldedVillains, setFoldedVillains] = useState<Set<number>>(new Set())
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  // The async loop below outlives renders, so it reads the latest history from a ref.
+  const historyRef = useRef<HandHistoryEntry[]>([])
+  const descsRef = useRef<Promise<VillainDesc>[]>([])
   const retryRef = useRef<(() => Promise<void>) | null>(null)
+  const aliveRef = useRef(true)
+  useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false } }, [])
 
-  // Run a villain/analysis step; on failure, surface it and keep a retry handle
-  // instead of leaving the table stuck on "villain to act".
+  // Run a step; on failure, surface it and keep a retry handle instead of
+  // leaving the table stuck on "villain to act".
   const guarded = async (step: () => Promise<void>) => {
     setErrorMsg(null)
     try { await step() } catch (err) {
       console.error(err)
       setThinkingVillain(null)
       setGamePhase('hero_acts')
-      setErrorMsg('The villain request failed (server or LLM error).')
+      setErrorMsg('That request failed (server, solver or LLM error).')
       retryRef.current = step
     }
   }
 
-  const currentStreet = STREETS[streetIndex]
-  const currentBoard = getBoardForStreet(streetIndex, startState.board)
-  const heroCards = parseCards(startState.holeCards)
-
-  const heroPostflopIdx = POSTFLOP_ORDER.indexOf(setup.position)
-  const oopVillainIndices = startState.villainPositions
-    .map((pos, i) => ({ i, orderIdx: POSTFLOP_ORDER.indexOf(pos) }))
-    .filter(({ orderIdx }) => orderIdx !== -1 && orderIdx < heroPostflopIdx)
-    .sort((a, b) => a.orderIdx - b.orderIdx).map(({ i }) => i)
-  const ipVillainIndices = startState.villainPositions
-    .map((pos, i) => ({ i, orderIdx: POSTFLOP_ORDER.indexOf(pos) }))
-    .filter(({ orderIdx }) => orderIdx !== -1 && orderIdx > heroPostflopIdx)
-    .sort((a, b) => a.orderIdx - b.orderIdx).map(({ i }) => i)
-  const heroPreflopIdx = PREFLOP_ORDER.indexOf(setup.position)
-  const preflopVillainIndices = startState.villainPositions
-    .map((pos, i) => ({ i, preflopIdx: PREFLOP_ORDER.indexOf(pos) }))
-    .sort((a, b) => ((a.preflopIdx - heroPreflopIdx + 8) % 8) - ((b.preflopIdx - heroPreflopIdx + 8) % 8))
-    .map(({ i }) => i)
-
-  const facingBet = villainBet !== null
-  const isWaiting = gamePhase === 'loading' || gamePhase === 'analyzing'
-
-  const setVillainRaise = (resp: VillainResponse | null) => {
-    setVillainBet(resp?.amount ?? null)
-    setPotOdds(resp?.potOdds ?? null)
-  }
-
-  const applyResult = (result: Awaited<ReturnType<typeof runVillainsSequential>>) => {
-    setHistory(result.history); setVillainDescriptions(result.descs)
-    setPot(result.pot); setEffectiveStack(result.stack); setFoldedVillains(result.foldedVillains)
-    setThinkingVillain(null)
-  }
-
-  const fetchVillainOpener = (idx: number) => guarded(async () => {
-    const board = getBoardForStreet(idx, startState.board)
-    const street = STREETS[idx]
-    setGamePhase('loading'); setStatusMsg(`${street}: villain to act`)
-    const result = await runVillainsSequential(setup, startState, history, villainDescriptions, street, board, pot, effectiveStack, foldedVillains, oopVillainIndices, setThinkingVillain)
-    applyResult(result)
-    if (result.handOver) { await runAnalysis(result.history, result.descs); return }
-    setVillainRaise(result.raisedResp)
-    setGamePhase('hero_acts')
-  })
-
-  const runAnalysis = async (finalHistory: HandHistoryEntry[], descs: VillainDesc[]) => {
+  const runAnalysis = async () => {
     setGamePhase('analyzing'); setStatusMsg('Solver is grading your decisions…'); setThinkingVillain(null)
-    try {
-      const { analysis } = await analyzeHand(userId, setup, startState, finalHistory)
-      onDone(analysis, descs)
-    } catch (err) {
-      console.error('Analysis error:', err)
-      setGamePhase('hero_acts')
-      setErrorMsg('Analysis failed.')
-      retryRef.current = () => runAnalysis(finalHistory, descs)
-    }
+    const [{ analysis }, descs] = await Promise.all([
+      analyzeHand(userId, setup, startState, historyRef.current),
+      Promise.all(descsRef.current),
+    ])
+    if (aliveRef.current) onDone(analysis, descs)
   }
 
-  // Street transitions are driven by streetIndex so the villain opener runs
-  // against fresh state after the previous street's updates have rendered.
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    if (streetIndex === 0) {
-      setGamePhase('hero_acts')
-      // If villain opened preflop, hero faces their raise immediately
-      const faces = !startState.heroIsPFR ? (startState.preflopRaiseAmount ?? null) : null
-      setVillainBet(faces)
-      setPotOdds(null)
+  // Bring the table up to date with the server, letting villains act until it
+  // is hero's turn or the hand ends. Safe to re-run after a failure.
+  const sync = async () => {
+    setGamePhase('loading'); setStatusMsg('Villain responding…')
+    let h = historyRef.current
+    let t = await getTable(setup, startState, h)
+    setTable(t)
+    while (!t.handOver && typeof t.toAct === 'number') {
+      setThinkingVillain(t.toAct)
+      setStatusMsg(`${t.street}: ${startState.villainPositions[t.toAct]} to act`)
+      const r = await villainAct(setup, startState, h)
+      h = r.history; t = r.table
+      historyRef.current = h; setHistory(h); setTable(t)
+      // The solver's reasoning is worded by the LLM in the background; it is only
+      // shown after the hand, so it never holds up the next action.
+      const desc = { street: r.entry.street, description: r.description }
+      descsRef.current.push(r.explain
+        ? explainVillain(r.explain).then(description => ({ ...desc, description }), () => desc)
+        : Promise.resolve(desc))
+    }
+    setThinkingVillain(null)
+    if (t.handOver) {
+      if (t.allInRunout) await sleep(1400)   // let the run-out be seen
+      await runAnalysis()
       return
     }
-    if (oopVillainIndices.length > 0) fetchVillainOpener(streetIndex)
-    else { setGamePhase('hero_acts'); setVillainRaise(null) }
-  }, [streetIndex]) // eslint-disable-line react-hooks/exhaustive-deps
-  /* eslint-enable react-hooks/set-state-in-effect */
+    setBetAmount(defaultBet(t, setup))
+    setGamePhase('hero_acts')
+  }
+
+  const currentStreet = table.street
+  const streetIndex = Math.max(0, STREETS.indexOf(currentStreet as typeof STREETS[number]))
+  const currentBoard = getBoardForStreet(streetIndex, startState.board)
+  const heroCards = parseCards(startState.holeCards)
+  const isWaiting = gamePhase === 'loading' || gamePhase === 'analyzing'
+  const canAct = !isWaiting && dealPhase === 'ready' && table.toAct === 'hero' && !errorMsg
+  const facingBet = table.toCall > 0
 
   const muckAfterHero = () => {
     const heroPfIdx = PREFLOP_ORDER.indexOf(setup.position)
@@ -263,111 +202,72 @@ export default function HandTrainer({ userId, setup, startState, onDone }: Props
     afterHero.forEach((seat, j) => { setTimeout(() => setMucked(prev => new Set([...prev, seat])), j * 180) })
   }
 
-  const handleHeroAction = async (action: string, amount?: number) => {
-    if (currentStreet === 'Preflop') muckAfterHero()
+  const handleHeroAction = (action: string, amount?: number) => {
+    if (!canAct) return
+    if (history.length === 0) muckAfterHero()
 
-    const heroEntry: HandHistoryEntry = { street: currentStreet, actor: 'hero', action, amount }
-    const newHistory = [...history, heroEntry]
-    setHistory(newHistory); setVillainRaise(null); setBetAmount('')
-    if (action === 'fold') { await runAnalysis(newHistory, villainDescriptions); return }
-    await guarded(() => afterHeroAction(action, amount, newHistory))
-  }
-
-  const afterHeroAction = async (action: string, amount: number | undefined, newHistory: HandHistoryEntry[]) => {
-    setGamePhase('loading'); setStatusMsg('Villain responding…')
-
-    if (currentStreet === 'Preflop' && !startState.heroIsPFR && action === 'call') {
-      const callAmt = startState.preflopRaiseAmount ?? 0
-      const postedBlind = setup.position === 'BB' ? 1.0 : setup.position === 'SB' ? 0.5 : 0
-      const newPot = Math.round((pot + callAmt) * 10) / 10
-      const newStack = Math.max(0, Math.round((effectiveStack - Math.max(0, callAmt - postedBlind)) * 10) / 10)
-      setPot(newPot)
-      setEffectiveStack(newStack)
-
-      const coldCallers = startState.villainPositions.slice(1).map((_, i) => i + 1)
-      if (coldCallers.length > 0) {
-        const result = await runVillainsSequential(setup, startState, newHistory, villainDescriptions, 'Preflop', [], newPot, newStack, foldedVillains, coldCallers, setThinkingVillain)
-        applyResult(result)
-        if (result.handOver) { await runAnalysis(result.history, result.descs); return }
+    const to = action === 'call' ? Math.min(table.toCall, table.maxRaise) : action === 'bet' || action === 'raise' ? amount : undefined
+    const entry: HandHistoryEntry = { street: currentStreet, actor: 'hero', action, amount: to }
+    const h = [...historyRef.current, entry]
+    historyRef.current = h; setHistory(h)
+    // Show hero's chips going in straight away; the server's table replaces this.
+    setTable(t => {
+      const add = to == null ? 0 : r2(to - t.heroIn)
+      return {
+        ...t, toAct: null, toCall: 0, callCost: 0, potOdds: null,
+        pot: r2(t.pot + add), heroStack: r2(t.heroStack - add),
+        heroIn: to ?? t.heroIn, bets: to == null ? t.bets : { ...t.bets, [setup.position]: to },
       }
-      setThinkingVillain(null)
-      setStreetIndex(1)
-      setGamePhase('hero_acts')
-      return
-    }
-
-    let villainsToRun: number[]
-    if (currentStreet === 'Preflop') {
-      villainsToRun = preflopVillainIndices
-    } else if (action === 'call') {
-      const callAmt = amount ?? 0
-      setPot(p => Math.round((p + callAmt) * 10) / 10)
-      setEffectiveStack(s => Math.max(0, Math.round((s - callAmt) * 10) / 10))
-      const nextIdx = streetIndex + 1
-      if (nextIdx >= STREETS.length) { await runAnalysis(newHistory, villainDescriptions); return }
-      setStreetIndex(nextIdx)
-      return
-    } else if (action === 'check') {
-      villainsToRun = ipVillainIndices
-    } else {
-      villainsToRun = [...oopVillainIndices, ...ipVillainIndices]
-    }
-
-    const result = await runVillainsSequential(setup, startState, newHistory, villainDescriptions, currentStreet, currentBoard, pot, effectiveStack, foldedVillains, villainsToRun, setThinkingVillain)
-    applyResult(result)
-    if (result.handOver) { await runAnalysis(result.history, result.descs); return }
-    if (result.raisedResp) { setVillainRaise(result.raisedResp); setGamePhase('hero_acts'); return }
-    const nextIdx = streetIndex + 1
-    if (nextIdx >= STREETS.length) { await runAnalysis(result.history, result.descs); return }
-    setStreetIndex(nextIdx)
+    })
+    guarded(sync)
   }
 
   // ── Bet sizing ────────────────────────────────────────────────────────────
-  const r1 = (n: number) => Math.round(n * 10) / 10
-  const minBet = facingBet ? r1((villainBet ?? 0) * 2) : currentStreet === 'Preflop' ? 2 : 1
-  const maxBet = Math.max(minBet, effectiveStack)
-  const presets = facingBet
-    ? [{ label: '2×', amt: r1(villainBet! * 2) }, { label: '2.5×', amt: r1(villainBet! * 2.5) }, { label: '3×', amt: r1(villainBet! * 3) }, { label: 'All-in', amt: effectiveStack }]
-    : currentStreet === 'Preflop'
-      ? [{ label: '2bb', amt: 2 }, { label: '2.5bb', amt: 2.5 }, { label: '3bb', amt: 3 }, { label: 'All-in', amt: effectiveStack }]
-      : [{ label: '33%', amt: r1(pot * 0.33) }, { label: '50%', amt: r1(pot * 0.5) }, { label: '75%', amt: r1(pot * 0.75) }, { label: 'Pot', amt: pot }, { label: 'All-in', amt: effectiveStack }]
+  const { minRaise: minBet, maxRaise: maxBet } = table
+  const unopened = currentStreet === 'Preflop' && table.preflopRaises === 0
+  const presets = (unopened
+    ? [{ label: '2bb', amt: 2 }, { label: '2.5bb', amt: 2.5 }, { label: '3bb', amt: 3 }]
+    : facingBet
+      ? [2.5, 3, 4].map(m => ({ label: `${m}×`, amt: r2(table.toCall * m) }))
+      : [{ label: '33%', amt: r2(table.pot * 0.33) }, { label: '50%', amt: r2(table.pot * 0.5) }, { label: '75%', amt: r2(table.pot * 0.75) }, { label: 'Pot', amt: r2(table.pot) }]
+  ).filter(p => p.amt >= minBet && p.amt < maxBet).concat([{ label: 'All-in', amt: maxBet }])
   const betNum = parseFloat(betAmount)
-  // A raise must be at least the min-raise unless it's a shove
-  const betValid = !Number.isNaN(betNum) && betNum > 0 && betNum <= maxBet && (betNum >= minBet || betNum === effectiveStack)
+  // A bet or raise must be at least the minimum unless it is all-in
+  const betValid = table.canRaise && !Number.isNaN(betNum) && betNum > 0 && betNum <= maxBet && (betNum >= minBet || betNum === maxBet)
+  const isShove = betValid && betNum >= maxBet
   const sliderVal = betValid ? Math.min(Math.max(betNum, minBet), maxBet) : minBet
   const sliderFill = maxBet > minBet ? ((sliderVal - minBet) / (maxBet - minBet)) * 100 : 100
 
-  const aggressiveLabel = facingBet ? 'Raise' : currentStreet === 'Preflop' ? 'Open' : 'Bet'
-  const passiveLabel = facingBet ? `Call ${villainBet}bb` : currentStreet === 'Preflop' ? 'Check / Fold' : 'Check'
+  const aggressiveName = currentStreet === 'Preflop' ? RAISE_NAMES[Math.min(table.preflopRaises, RAISE_NAMES.length - 1)] : facingBet ? 'Raise' : 'Bet'
+  const aggressiveLabel = !betValid ? aggressiveName
+    : isShove ? `All-in ${bb(betNum)}bb`
+    : `${aggressiveName}${facingBet && !unopened ? ' to' : ''} ${bb(betNum)}bb`
+  const passiveLabel = !facingBet ? 'Check' : table.callCost >= table.heroStack ? `Call all-in ${bb(table.callCost)}bb` : `Call ${bb(table.callCost)}bb`
 
-  // Chips in front of each seat on the current street: preflop starts from the
-  // blinds/open/3-bet the server dealt us into, then every action updates it.
-  const streetBets = useMemo(() => {
-    const bets: Record<string, number> = currentStreet === 'Preflop' ? { ...(startState.preflopBets ?? {}) } : {}
-    for (const h of history) {
-      if (h.street !== currentStreet) continue
-      const pos = h.actor === 'hero' ? setup.position : startState.villainPositions[h.villainIdx ?? 0]
-      if (!pos) continue
-      if (h.action === 'fold') delete bets[pos]
-      else if (h.action === 'bet' || h.action === 'raise') { if (h.amount != null) bets[pos] = h.amount }
-      else if (h.action === 'call') bets[pos] = h.amount ?? Math.max(0, ...Object.values(bets))
-    }
-    return bets
-  }, [history, currentStreet, startState, setup.position])
+  const fold = () => { if (facingBet) handleHeroAction('fold') }
+  const checkOrCall = () => handleHeroAction(facingBet ? 'call' : 'check')
+  const betOrRaise = () => { if (betValid) handleHeroAction(currentStreet !== 'Preflop' && !facingBet ? 'bet' : 'raise', betNum) }
 
-  const canAct = !isWaiting && dealPhase === 'ready'
-  const btnSeat = seatedPositions.indexOf('BTN')
-
-  // Pre-fill a sensible size at each new decision point (user can change it)
-  const decisionKey = `${currentStreet}|${villainBet ?? ''}|${history.length}`
-  const lastDecisionRef = useRef<string | null>(null)
+  // Keyboard: F fold, C check/call, R (or B) bet/raise. Re-bound every render so
+  // the handlers always see the current table.
   useEffect(() => {
-    if (!canAct || lastDecisionRef.current === decisionKey) return
-    lastDecisionRef.current = decisionKey
-    const solverPct = Number(setup.betSize ?? 75) / 100
-    const def = facingBet ? r1((villainBet ?? 0) * 2.5) : currentStreet === 'Preflop' ? 2.5 : r1(pot * solverPct)
-    setBetAmount(String(Math.min(Math.max(def, minBet), maxBet)))
-  }, [canAct, decisionKey])
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && (el as HTMLInputElement).type !== 'range') return
+      const k = e.key.toLowerCase()
+      if (k === 'f') fold()
+      else if (k === 'c') checkOrCall()
+      else if (k === 'r' || k === 'b') betOrRaise()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  const streetBets = table.bets
+  const foldedVillains = table.folded
+  const btnSeat = seatedPositions.indexOf('BTN')
+  const actorName = (h: HandHistoryEntry) => h.actor === 'hero' ? 'You' : startState.villainPositions[h.villainIdx ?? 0] ?? 'Villain'
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -392,8 +292,8 @@ export default function HandTrainer({ userId, setup, startState, onDone }: Props
           <div className="absolute left-1/2 top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3">
             <div className="flex items-center gap-2 rounded-full bg-black/45 px-3 py-1 text-[12px] font-semibold text-white/90 backdrop-blur-sm">
               <span className="text-white/50">Pot</span>
-              <span className="text-[14px] font-bold">{pot}bb</span>
-              {potOdds && <span className="ml-1 border-l border-white/15 pl-2 text-white/60">odds {potOdds}</span>}
+              <span className="text-[14px] font-bold">{bb(table.pot)}bb</span>
+              {table.potOdds && canAct && <span className="ml-1 border-l border-white/15 pl-2 text-white/60">odds {table.potOdds}</span>}
             </div>
             <div className="flex gap-1.5">
               {currentBoard.map((c, i) => (
@@ -423,7 +323,7 @@ export default function HandTrainer({ userId, setup, startState, onDone }: Props
             const isHero = seatIdx === 0
             const villainIdx = startState.villainPositions.indexOf(pos)
             const isVillain = villainIdx !== -1
-            const isFolded = isVillain && foldedVillains.has(villainIdx)
+            const isFolded = isVillain && foldedVillains.includes(villainIdx)
             const isMucked = mucked.has(seatIdx)
             const isOut = isMucked || isFolded
             const isActing = (isHero && canAct) || (isVillain && thinkingVillain === villainIdx)
@@ -438,7 +338,7 @@ export default function HandTrainer({ userId, setup, startState, onDone }: Props
                   <div className="absolute z-20 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full bg-black/55 py-0.5 pl-0.5 pr-2.5 text-[12px] font-bold text-white backdrop-blur-sm"
                     style={{ left: `${c.x}%`, top: `${c.y}%`, animation: 'chipIn 0.25s ease-out both' }}>
                     <span className="h-4 w-4 rounded-full border-[3px] border-dashed border-white/80" style={{ background: isHero ? '#8b7cff' : '#ff5c5c' }} />
-                    {chip}bb
+                    {bb(chip)}bb
                   </div>
                 )}
 
@@ -463,7 +363,7 @@ export default function HandTrainer({ userId, setup, startState, onDone }: Props
                       <span className={`text-[12px] font-bold leading-tight ${isHero ? 'text-white' : 'text-white/90'}`}>{isHero ? 'You' : 'Villain'}</span>
                     )}
                     <span className={`text-[10px] font-semibold uppercase tracking-wider ${isHero || isVillain ? 'text-white/45' : 'text-white/30'}`}>
-                      {pos}{isHero ? ` · ${effectiveStack}bb` : ''}
+                      {pos}{isHero ? ` · ${bb(table.heroStack)}bb` : ''}
                     </span>
                     {isVillain && thinkingVillain === villainIdx && (
                       <span className="absolute -top-2 right-1 rounded bg-accent px-1 text-[9px] font-bold text-white">…</span>
@@ -481,51 +381,53 @@ export default function HandTrainer({ userId, setup, startState, onDone }: Props
             <span className="inline-flex items-center gap-2"><span className="h-2 w-2 animate-pulse rounded-full bg-accent" />{statusMsg}</span>
           ) : dealPhase !== 'ready' ? (
             <span className="inline-flex items-center gap-2"><span className="h-2 w-2 animate-pulse rounded-full bg-white/40" />Dealing…</span>
-          ) : streetIndex === 0 ? startState.preflopContext : facingBet ? `Facing a ${villainBet}bb ${currentStreet === 'Preflop' ? 'raise' : 'bet'}. Your move.` : 'Your move.'}
+          ) : history.length === 0 ? startState.preflopContext
+            : facingBet ? `Facing ${bb(table.toCall)}bb — ${bb(table.callCost)}bb to call${table.potOdds ? ` (pot odds ${table.potOdds})` : ''}.`
+            : 'Your move.'}
           {errorMsg && (
             <span className="ml-3 inline-flex items-center gap-2 rounded-md border border-raise/40 bg-raise/10 px-2.5 py-1 text-[12px] text-raise">
               {errorMsg}
-              <button onClick={() => { const r = retryRef.current; if (r) { retryRef.current = null; guarded(r) } }}
+              <button onClick={() => { const r = retryRef.current ?? sync; retryRef.current = null; guarded(r) }}
                 className="font-bold underline underline-offset-2 hover:text-white">Retry</button>
             </span>
           )}
         </div>
 
         {/* ── Action bar ────────────────────────────────────────────────── */}
-        <div className={`rounded-2xl border border-ink-600/60 bg-ink-800/80 p-3 transition-opacity ${canAct && !errorMsg ? '' : 'pointer-events-none opacity-40'}`}>
-          <div className="mb-3 flex items-center gap-3">
+        <div className={`rounded-2xl border border-ink-600/60 bg-ink-800/80 p-3 transition-opacity ${canAct ? '' : 'pointer-events-none opacity-40'}`}>
+          <div className={`mb-3 flex items-center gap-3 ${table.canRaise || !canAct ? '' : 'pointer-events-none opacity-30'}`}>
             <input type="range" className="bet-slider flex-1" min={minBet} max={maxBet} step={0.5} value={sliderVal}
               style={{ ['--fill' as string]: `${sliderFill}%` }}
               onChange={e => setBetAmount(e.target.value)} />
             <div className="flex items-center rounded-lg border border-ink-500 bg-ink-900 pr-2">
-              <input type="number" value={betAmount} onChange={e => setBetAmount(e.target.value)} placeholder={String(minBet)}
+              <input type="number" value={betAmount} onChange={e => setBetAmount(e.target.value)} placeholder={bb(minBet)}
                 className="w-16 bg-transparent px-2 py-1.5 text-right text-sm font-bold text-white outline-none placeholder:text-white/25" />
               <span className="text-[11px] font-semibold text-white/40">bb</span>
             </div>
             <div className="hidden gap-1 sm:flex">
               {presets.map(({ label, amt }) => (
-                <button key={label} onClick={() => setBetAmount(String(amt))}
+                <button key={label} onClick={() => setBetAmount(bb(amt))}
                   className={`rounded-md border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
-                    betAmount === String(amt) ? 'border-raise/60 bg-raise/20 text-white' : 'border-ink-500 bg-ink-900 text-white/60 hover:text-white'
+                    betAmount === bb(amt) ? 'border-raise/60 bg-raise/20 text-white' : 'border-ink-500 bg-ink-900 text-white/60 hover:text-white'
                   }`}>{label}</button>
               ))}
             </div>
           </div>
           <div className="grid grid-cols-3 gap-2">
-            <button onClick={() => handleHeroAction('fold')}
-              className="rounded-xl border border-fold/40 bg-fold/15 py-3.5 text-sm font-bold text-fold transition-colors hover:bg-fold/25">
+            <button disabled={!facingBet} onClick={fold} title="Fold (F)"
+              className="rounded-xl border border-fold/40 bg-fold/15 py-3.5 text-sm font-bold text-fold transition-colors hover:bg-fold/25 disabled:border-ink-600 disabled:bg-ink-900 disabled:text-white/25">
               Fold
             </button>
-            <button onClick={() => facingBet ? handleHeroAction('call', villainBet ?? undefined) : handleHeroAction('check')}
+            <button onClick={checkOrCall} title={`${facingBet ? 'Call' : 'Check'} (C)`}
               className="rounded-xl border border-call/40 bg-call/15 py-3.5 text-sm font-bold text-call transition-colors hover:bg-call/25">
               {passiveLabel}
             </button>
-            <button disabled={!betValid}
-              onClick={() => betValid && handleHeroAction(facingBet || currentStreet === 'Preflop' ? 'raise' : 'bet', betNum)}
+            <button disabled={!betValid} onClick={betOrRaise} title={`${aggressiveName} (R)`}
               className="rounded-xl border border-raise/40 bg-raise/15 py-3.5 text-sm font-bold text-raise transition-colors hover:bg-raise/25 disabled:border-ink-600 disabled:bg-ink-900 disabled:text-white/25">
-              {aggressiveLabel}{betValid ? ` ${betNum}bb` : ''}
+              {aggressiveLabel}
             </button>
           </div>
+          <p className="mt-2 hidden text-center text-[10px] font-medium uppercase tracking-wider text-white/25 sm:block">Keys: F fold · C check / call · R bet / raise</p>
         </div>
       </div>
 
@@ -533,7 +435,7 @@ export default function HandTrainer({ userId, setup, startState, onDone }: Props
       <aside className="rounded-2xl border border-ink-600/60 bg-ink-800/60 p-4">
         <div className="mb-3 flex items-center justify-between">
           <h3 className="text-[12px] font-bold uppercase tracking-wider text-white/50">Hand log</h3>
-          <span className="text-[11px] text-white/40">{setup.stackDepth} · {setup.isMultiway ? 'multiway' : 'heads-up'}</span>
+          <span className="text-[11px] text-white/40">{setup.stackDepth} · {startState.villainPositions.length > 1 ? 'multiway' : 'heads-up'}</span>
         </div>
         {history.length === 0 ? (
           <p className="text-[13px] leading-relaxed text-white/40">{startState.preflopContext}</p>
@@ -548,7 +450,7 @@ export default function HandTrainer({ userId, setup, startState, onDone }: Props
                 <div className="space-y-1">
                   {history.filter(h => h.street === s).map((h, i) => (
                     <div key={i} className="flex items-center justify-between text-[12px]">
-                      <span className={h.actor === 'hero' ? 'font-semibold text-white' : 'text-white/60'}>{h.actor === 'hero' ? 'You' : 'Villain'}</span>
+                      <span className={h.actor === 'hero' ? 'font-semibold text-white' : 'text-white/60'}>{actorName(h)}</span>
                       <ActionTag action={h.action} amount={h.amount} />
                     </div>
                   ))}

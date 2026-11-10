@@ -3,3 +3,7 @@ dist/
 .env
 client/dist/
 server/src/generated/
+
+# Swift build output
+recorder/.build/
+recorder/build/
