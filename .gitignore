@@ -7,3 +7,6 @@ server/src/generated/
 # Swift build output
 recorder/.build/
 recorder/build/
+
+# Local assistant notes
+CLAUDE.md
